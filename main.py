@@ -967,7 +967,7 @@ def handle_voice_command(command_text: str) -> None:
 
                 with landscape_mgr._lock:
                     if stem not in landscape_mgr.presets:
-                        landscape_mgr.presets[stem] = landscape_mgr.build_custom_preset(stem, is_ai=False)
+                        landscape_mgr.presets[stem] = landscape_mgr.build_custom_preset(stem, source_type="web")
                     landscape_mgr.switch_to_preset(stem)
 
                 AudioController.register_custom_scene_keyword(stem)
@@ -1415,14 +1415,30 @@ def render_window_stage(oob: bool = False) -> FT:
         "object-position:center center; display:block;"
     )
 
+    if s_state.is_generating:
+        pct = s_state.generation_progress_pct
+        if pct <= 40:
+            step_label = "Step 1/4"
+        elif pct <= 55:
+            step_label = "Step 2/4"
+        elif pct <= 92:
+            step_label = "Step 3/4"
+        else:
+            step_label = "Step 4/4"
+        loading_text = f"배경 생성 중 ({step_label})"
+    elif web_search_mgr.is_searching:
+        loading_text = "배경 검색 중..."
+    else:
+        loading_text = ""
+
     loading_badge = (
         Div(
             Div(cls="window-loading-spinner"),
-            Span(f"ComfyUI 풍경 생성 중 ({s_state.generation_progress_pct}%) · {s_state.generation_status_text}"),
+            Span(loading_text),
             Div(Span(), Span(), Span(), cls="window-loading-dots"),
             cls="window-loading-badge",
         )
-        if s_state.is_generating
+        if loading_text
         else ""
     )
 
@@ -2040,11 +2056,15 @@ def render_settings_controls(oob: bool = False) -> FT:
         Div(
             Div(
                 Span("5. 구글 이미지 검색 & 웹 배경 찾기"),
-                Span("구글 API 연동" if (web_search_mgr.config.api_key and web_search_mgr.config.cx) else "스마트 웹 폴백", cls="card-status-pill"),
+                Span(
+                    "SerpApi 구글 연동" if web_search_mgr.config.serpapi_key
+                    else ("구글 API 연동" if (web_search_mgr.config.api_key and web_search_mgr.config.cx) else "스마트 웹 폴백"),
+                    cls="card-status-pill",
+                ),
                 cls="option-card-title",
             ),
             P(
-                "\"~ 찾아줘\"라고 말씀하시면(예: '도쿄 야경 찾아줘', '스위스 알프스 찾아줘') 구글/웹에서 고화질 16:9 와이드 배경 사진만 선별하여 창문 화면에 맞춰 즉시 적용합니다.",
+                "\"~ 찾아줘\"라고 말씀하시면(예: '도쿄 야경 찾아줘', '스위스 알프스 찾아줘') 구글/SerpApi 및 웹에서 고화질 16:9 와이드 배경 사진만 선별하여 창문 화면에 맞춰 즉시 적용합니다.",
                 cls="option-card-desc",
             ),
             Form(
@@ -2064,11 +2084,21 @@ def render_settings_controls(oob: bool = False) -> FT:
                 cls="control-group",
             ),
             Details(
-                Summary("🔑 Google Custom Search API Key & CX 설정 (클릭하여 열기)"),
+                Summary("🔑 구글 서치 API (SerpApi & Google Custom Search) 설정 (클릭하여 열기)"),
                 Form(
                     Div(
                         Div(
-                            Span("Google Cloud API Key", cls="field-label"),
+                            Span("SerpApi Key (구글 이미지 검색: https://serpapi.com/search?engine=google_images)", cls="field-label"),
+                            Input(
+                                type="text",
+                                name="serpapi_key",
+                                value=web_search_mgr.config.serpapi_key,
+                                placeholder="SerpApi Secret Key (https://serpapi.com 에서 발급)",
+                            ),
+                            style="grid-column: 1 / -1;",
+                        ),
+                        Div(
+                            Span("Google Cloud API Key (선택)", cls="field-label"),
                             Input(
                                 type="text",
                                 name="api_key",
@@ -2077,7 +2107,7 @@ def render_settings_controls(oob: bool = False) -> FT:
                             ),
                         ),
                         Div(
-                            Span("Custom Search Engine ID (CX)", cls="field-label"),
+                            Span("Custom Search Engine ID (CX, 선택)", cls="field-label"),
                             Input(
                                 type="text",
                                 name="cx",
@@ -2097,7 +2127,7 @@ def render_settings_controls(oob: bool = False) -> FT:
                 style="margin-top:2px;",
             ),
             P(
-                "💡 API 키를 등록하지 않아도 고화질 스마트 웹 풍경 검색 폴백(Wikimedia/Unsplash)으로 바로 찾을 수 있습니다.",
+                "💡 API 키를 등록하지 않아도 Bing/Unsplash/DuckDuckGo/Wikimedia 고화질 와이드 실시간 엔진으로 바로 찾을 수 있습니다.",
                 cls="option-card-desc",
                 style="color: var(--ss-blue-dark); font-weight: 600;",
             ),
@@ -2540,12 +2570,12 @@ def post_toggle_wake_word_mode():
 
 
 @rt("/api/web-search/config")
-def post_web_search_config(api_key: str = "", cx: str = ""):
-    web_search_mgr.save_config(api_key=api_key, cx=cx)
+def post_web_search_config(api_key: str = "", cx: str = "", serpapi_key: str = ""):
+    web_search_mgr.save_config(api_key=api_key, cx=cx, serpapi_key=serpapi_key)
     audio_ctrl.add_log(
         "SYSTEM",
-        f"⚙️ Google Custom Search API 설정 저장 완료 (Key: {'등록됨' if api_key else '미등록'} | CX: {'등록됨' if cx else '미등록'})",
-        "키가 없어도 스마트 고화질 웹 풍경 폴백으로 자동 검색됩니다.",
+        f"⚙️ Google/SerpApi 검색 API 설정 저장 완료 (SerpApi: {'등록됨' if serpapi_key else '미등록'} | Google Key: {'등록됨' if api_key else '미등록'})",
+        "https://serpapi.com/search?engine=google_images 연동 활성화",
     )
     return render_settings_controls()
 
@@ -2572,7 +2602,7 @@ def post_web_search_execute(search_query: str = ""):
 
             with landscape_mgr._lock:
                 if stem not in landscape_mgr.presets:
-                    landscape_mgr.presets[stem] = landscape_mgr.build_custom_preset(stem, is_ai=False)
+                    landscape_mgr.presets[stem] = landscape_mgr.build_custom_preset(stem, source_type="web")
                 landscape_mgr.switch_to_preset(stem)
 
             AudioController.register_custom_scene_keyword(stem)

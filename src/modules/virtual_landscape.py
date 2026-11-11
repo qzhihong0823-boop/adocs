@@ -95,6 +95,7 @@ class ScenePreset:
     lighting_key: str
     default_filename: str
     is_custom_or_ai: bool = False
+    source_type: str = "default"  # "default" | "ai" | "web" | "custom"
 
 
 @dataclass
@@ -913,6 +914,8 @@ class VirtualLandscapeManager:
             "만들어줘", "만들어 줘", "만들어", "생성해줘", "생성해 줘", "생성해",
             "그려줘", "그려 줘", "그려", "보여줘", "보여 줘", "바꿔줘", "바꿔 줘",
             "틀어줘", "틀어 줘", "켜줘", "켜 줘", "적용해줘", "적용해 줘", "해줘", "해 줘",
+            "찾아줘", "찾아 줘", "찾아", "검색해줘", "검색해 줘", "검색해",
+            "찾아봐", "찾아봐줘", "구해줘",
             "새로", "다시", "지금", "바로", "좀",
         )
         for phrase in remove_phrases:
@@ -965,8 +968,23 @@ class VirtualLandscapeManager:
         return "default"
 
     @classmethod
-    def build_custom_preset(cls, scene_stem: str, is_ai: bool = False) -> ScenePreset:
+    def build_custom_preset(
+        cls,
+        scene_stem: str,
+        source_type: str = "custom",
+        is_ai: Optional[bool] = None,
+    ) -> ScenePreset:
+        if is_ai is True:
+            source_type = "ai"
+        elif is_ai is False and source_type == "ai":
+            source_type = "custom"
+
         display_name = scene_stem.replace("_", " ").strip()
+        # "찾아줘", "만들어줘" 등 불필요 트리거 단어 제거
+        for v in ("찾아줘", "찾아 줘", "만들어줘", "만들어 줘", "그려줘", "그려 줘", "검색해줘", "검색해 줘", "찾아", "검색해"):
+            display_name = display_name.replace(v, "").strip()
+
+        display_name = re.sub(r"\s+", " ", display_name).strip()
         compact_name = display_name.replace(" ", "")
 
         short_core = display_name
@@ -998,7 +1016,17 @@ class VirtualLandscapeManager:
                 unique_kws.append(kw_clean)
 
         lighting_key = cls.infer_lighting_key_from_name(display_name)
-        title = f"{display_name} (AI)" if is_ai else display_name
+
+        # [사용자 핵심 규칙]
+        # 만든 거: (AI)
+        # 찾은 거: (웹)
+        # 넣은 거 & 기본 설정: 뒤에 괄호 치지 않음!
+        if source_type == "ai":
+            title = f"{display_name} (AI)"
+        elif source_type == "web":
+            title = f"{display_name} (웹)"
+        else:
+            title = display_name  # 넣은 거 & 기본 설정은 괄호 없음!
 
         return ScenePreset(
             key=scene_stem,
@@ -1006,12 +1034,16 @@ class VirtualLandscapeManager:
             keywords=tuple(unique_kws),
             lighting_key=lighting_key,
             default_filename=scene_stem,
-            is_custom_or_ai=True,
+            is_custom_or_ai=(source_type != "default"),
+            source_type=source_type,
         )
 
     def scan_and_register_preset_files(self) -> List[str]:
         registered_keys: List[str] = []
+        web_images_dir = self.base_dir / ".cache" / "web_images"
+
         with self._lock:
+            # 1. ComfyUI 캐시에서 presets 폴더로 복사
             if self.cache_dir.exists():
                 for c_file in sorted(self.cache_dir.iterdir()):
                     if not c_file.is_file() or c_file.suffix.lower() not in self.SUPPORTED_EXTS:
@@ -1026,6 +1058,7 @@ class VirtualLandscapeManager:
                         except Exception:
                             pass
 
+            # 2. presets 디렉터리 내 파일들을 스캔하여 출처별(AI/웹/직접넣음)로 등록
             if self.presets_dir.exists():
                 for p_file in sorted(self.presets_dir.iterdir(), key=lambda f: f.stat().st_mtime):
                     if not p_file.is_file() or p_file.suffix.lower() not in self.SUPPORTED_EXTS:
@@ -1033,8 +1066,30 @@ class VirtualLandscapeManager:
                     stem = p_file.stem
                     if stem.lower() in DEFAULT_SCENE_PRESETS:
                         continue
-                    is_ai_file = (self.cache_dir / p_file.name).exists()
-                    self.presets[stem] = self.build_custom_preset(stem, is_ai=is_ai_file)
+
+                    # 출처 정밀 판별
+                    # A) AI 생성: ComfyUI landscape_cache 폴더에 원본이 있거나 .png 파일이면서 cache_dir 매칭
+                    is_ai_file = (self.cache_dir / p_file.name).exists() or (
+                        self.cache_dir / f"{stem}.png"
+                    ).exists()
+
+                    # B) 웹 이미지 검색: .cache/web_images/ 에 stem과 매칭되는 파일이 있거나 web_images 기록에 있는 경우
+                    is_web_file = False
+                    if web_images_dir.exists():
+                        for w_file in web_images_dir.iterdir():
+                            if w_file.is_file() and w_file.stem.startswith(stem):
+                                is_web_file = True
+                                break
+
+                    if is_ai_file:
+                        src_type = "ai"
+                    elif is_web_file:
+                        src_type = "web"
+                    else:
+                        # 사용자가 직접 넣은 파일 (괄호 없음)
+                        src_type = "custom"
+
+                    self.presets[stem] = self.build_custom_preset(stem, source_type=src_type)
                     registered_keys.append(stem)
 
         return registered_keys
@@ -1124,7 +1179,7 @@ class VirtualLandscapeManager:
 
             with self._lock:
                 if stem not in DEFAULT_SCENE_PRESETS:
-                    self.presets[stem] = self.build_custom_preset(stem, is_ai=False)
+                    self.presets[stem] = self.build_custom_preset(stem, source_type="custom")
                 self.switch_to_preset(stem)
                 return stem, self.current_image_url
 
@@ -1167,7 +1222,7 @@ class VirtualLandscapeManager:
 
         with self._lock:
             if stem not in self.presets:
-                self.presets[stem] = self.build_custom_preset(stem, is_ai=True)
+                self.presets[stem] = self.build_custom_preset(stem, source_type="ai")
             self.switch_to_preset(stem)
             self.generation_progress_pct = 100
             self.generation_status_text = f"✅ AI 생성 풍경 적용 완료 ({latest.name})"
@@ -1705,7 +1760,7 @@ class VirtualLandscapeManager:
 
             total_sec = round(time.time() - gen_start_ts, 1)
             with self._lock:
-                custom_preset = self.build_custom_preset(scene_stem, is_ai=True)
+                custom_preset = self.build_custom_preset(scene_stem, source_type="ai")
                 if lighting_key and lighting_key != "default":
                     custom_preset.lighting_key = lighting_key
                 self.presets[scene_stem] = custom_preset

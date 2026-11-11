@@ -36,6 +36,7 @@ from PIL import Image
 class GoogleSearchConfig:
     api_key: str = ""
     cx: str = ""  # Custom Search Engine ID
+    serpapi_key: str = ""  # SerpApi Key (https://serpapi.com/search?engine=google_images)
 
 
 @dataclass
@@ -138,21 +139,31 @@ class WebImageSearchManager:
     def _load_config(self) -> GoogleSearchConfig:
         api_key = os.environ.get("GOOGLE_SEARCH_API_KEY", "").strip()
         cx = os.environ.get("GOOGLE_SEARCH_CX", "").strip()
+        serpapi_key = os.environ.get("SERPAPI_API_KEY", "").strip()
         if self.config_file.exists():
             try:
                 data = json.loads(self.config_file.read_text(encoding="utf-8"))
                 api_key = data.get("api_key", api_key).strip()
                 cx = data.get("cx", cx).strip()
+                serpapi_key = data.get("serpapi_key", serpapi_key).strip()
             except Exception:
                 pass
-        return GoogleSearchConfig(api_key=api_key, cx=cx)
+        return GoogleSearchConfig(api_key=api_key, cx=cx, serpapi_key=serpapi_key)
 
-    def save_config(self, api_key: str, cx: str) -> GoogleSearchConfig:
-        self.config.api_key = api_key.strip()
-        self.config.cx = cx.strip()
+    def save_config(self, api_key: str = "", cx: str = "", serpapi_key: str = "") -> GoogleSearchConfig:
+        if api_key != "":
+            self.config.api_key = api_key.strip()
+        if cx != "":
+            self.config.cx = cx.strip()
+        if serpapi_key != "":
+            self.config.serpapi_key = serpapi_key.strip()
         try:
             self.config_file.write_text(
-                json.dumps({"api_key": self.config.api_key, "cx": self.config.cx}, ensure_ascii=False, indent=2),
+                json.dumps({
+                    "api_key": self.config.api_key,
+                    "cx": self.config.cx,
+                    "serpapi_key": self.config.serpapi_key,
+                }, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
         except Exception:
@@ -221,16 +232,26 @@ class WebImageSearchManager:
         try:
             candidates: List[ImageCandidate] = []
 
-            # 1. Google Custom Search JSON API (사용자가 API Key/CX를 설정한 경우 1순위)
-            if self.config.api_key and self.config.cx:
+            # 1. SerpApi Google Images API (엔드포인트: https://serpapi.com/search?engine=google_images)
+            serp_key = self.config.serpapi_key or os.environ.get("SERPAPI_API_KEY", "").strip()
+            if serp_key:
                 if log_callback:
-                    log_callback("WEB", "🔍 Google Custom Search JSON API 1차 검색 중...")
+                    log_callback("WEB", f"🔍 SerpApi Google Images API 1순위 검색 중: \"{clean_query}\"...")
+                serp_cands = self._search_serpapi_google_images(clean_query, eng_query)
+                candidates.extend(serp_cands)
+                if serp_cands and log_callback:
+                    log_callback("WEB", f"✅ SerpApi 구글 이미지에서 {len(serp_cands)}개 고화질 와이드 후보 확보")
+
+            # 2. Google Custom Search JSON API (사용자가 API Key/CX를 설정한 경우)
+            if len(candidates) < 6 and self.config.api_key and self.config.cx:
+                if log_callback:
+                    log_callback("WEB", "🔍 Google Custom Search JSON API 2차 검색 중...")
                 google_cands = self._search_google_api(clean_query, eng_query)
                 candidates.extend(google_cands)
                 if google_cands and log_callback:
                     log_callback("WEB", f"✅ 구글 공식 API에서 {len(google_cands)}개 고화질 후보 확보")
 
-            # 2. Bing Images 실시간 와이드 고화질 검색 (API 키 불필요, 1920x1080 이상 실사 원본)
+            # 3. Bing Images 실시간 와이드 고화질 검색 (API 키 불필요, 1920x1080 이상 실사 원본)
             if len(candidates) < 6:
                 if log_callback:
                     log_callback("WEB", f"🔎 Bing 웹 이미지 검색 엔진 가동: \"{clean_query}\"...")
@@ -239,7 +260,7 @@ class WebImageSearchManager:
                 if bing_cands and log_callback:
                     log_callback("WEB", f"✅ Bing 검색에서 {len(bing_cands)}개 고화질 와이드 후보 확보")
 
-            # 3. Unsplash 실시간 16:9 와이드 풍경 검색 (API 키 불필요)
+            # 4. Unsplash 실시간 16:9 와이드 풍경 검색 (API 키 불필요)
             if len(candidates) < 6:
                 if log_callback:
                     log_callback("WEB", f"🔎 Unsplash 4K 와이드 풍경 검색: \"{eng_query[:25]}\"...")
@@ -248,12 +269,12 @@ class WebImageSearchManager:
                 if unsplash_cands and log_callback:
                     log_callback("WEB", f"✅ Unsplash에서 {len(unsplash_cands)}개 고화질 후보 확보")
 
-            # 4. DuckDuckGo Images 실시간 검색
+            # 5. DuckDuckGo Images 실시간 검색
             if len(candidates) < 6:
                 ddg_cands = self._search_duckduckgo_images(clean_query, eng_query)
                 candidates.extend(ddg_cands)
 
-            # 5. Wikimedia Commons 고해상도 풍경 라이브러리
+            # 6. Wikimedia Commons 고해상도 풍경 라이브러리
             if len(candidates) < 6:
                 wiki_cands = self._search_wikimedia(clean_query, eng_query)
                 candidates.extend(wiki_cands)
@@ -488,6 +509,76 @@ class WebImageSearchManager:
 
         return results
 
+    def _search_serpapi_google_images(self, query: str, eng_query: str) -> List[ImageCandidate]:
+        """
+        SerpApi Google Images 검색 엔진 연동:
+        엔드포인트: https://serpapi.com/search?engine=google_images
+        - 실제 구글 이미지 검색 결과를 16:9 와이드 및 고해상도로 정밀 수집
+        """
+        serp_key = self.config.serpapi_key or os.environ.get("SERPAPI_API_KEY", "").strip()
+        if not serp_key:
+            return []
+
+        results: List[ImageCandidate] = []
+        search_terms = [
+            f"{eng_query} wallpaper 4k",
+            f"{query} 풍경 와이드 배경화면",
+        ]
+
+        for q_term in search_terms:
+            try:
+                params = {
+                    "engine": "google_images",
+                    "q": q_term,
+                    "api_key": serp_key,
+                    "tbs": "iar:w",  # 16:9 와이드 비율 필터!
+                    "ijn": "0",
+                    "gl": "kr",
+                    "hl": "ko",
+                }
+                url = f"https://serpapi.com/search?{urllib.parse.urlencode(params)}"
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (WINDO-Google-Images)",
+                        "Accept": "application/json",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=8.0, context=self._ssl_ctx) as resp:
+                    data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+
+                items = data.get("images_results", [])
+                for item in items:
+                    if item.get("is_product", False):
+                        continue
+                    orig_url = item.get("original") or item.get("thumbnail")
+                    if not orig_url or not (orig_url.startswith("http://") or orig_url.startswith("https://")):
+                        continue
+
+                    w = int(item.get("original_width") or 1920)
+                    h = int(item.get("original_height") or 1080)
+                    title = str(item.get("title") or q_term)
+
+                    # 가로 세로 비율 검사
+                    if w and h and (w / h) < 1.15:
+                        continue
+
+                    results.append(
+                        ImageCandidate(
+                            url=orig_url,
+                            width=w,
+                            height=h,
+                            title=title,
+                            source="serpapi_google_images",
+                        )
+                    )
+                if len(results) >= 8:
+                    break
+            except Exception:
+                continue
+
+        return results
+
     def _search_google_api(self, query: str, eng_query: str) -> List[ImageCandidate]:
         """Google Custom Search JSON API 호출"""
         results: List[ImageCandidate] = []
@@ -623,7 +714,9 @@ class WebImageSearchManager:
             if any(pos in lower_title for pos in self.POSITIVE_KEYWORDS):
                 score += 25.0
 
-            if cand.source == "google_api":
+            if cand.source == "serpapi_google_images":
+                score += 40.0  # 공식 구글 이미지 엔진 최우선 보너스
+            elif cand.source == "google_api":
                 score += 30.0
             elif cand.source == "bing_web":
                 score += 25.0
@@ -738,5 +831,23 @@ class WebImageSearchManager:
 
     @staticmethod
     def _sanitize_filename(name: str) -> str:
-        clean = re.sub(r'[\\/*?:"<>|]', "", name).strip().replace(" ", "_")
-        return clean[:30] if clean else "web_image"
+        clean = name.strip()
+        for ww in ("윈도우", "윈도", "window", "windo"):
+            if clean.lower().startswith(ww):
+                clean = clean[len(ww):].strip()
+
+        for v in (
+            "찾아줘", "찾아 줘", "찾아", "검색해줘", "검색해 줘", "검색해",
+            "만들어줘", "만들어 줘", "만들어", "생성해줘", "생성해 줘", "생성해",
+            "그려줘", "그려 줘", "그려", "보여줘", "보여 줘", "바꿔줘", "바꿔 줘",
+            "틀어줘", "틀어 줘", "켜줘", "켜 줘", "적용해줘", "적용해 줘", "해줘", "해 줘",
+            "찾아봐", "찾아봐줘", "구해줘",
+            "새로", "다시", "지금", "바로", "좀",
+        ):
+            clean = clean.replace(v, " ")
+
+        clean = re.sub(r"(이미지|사진|풍경|배경|화면|웹에서|구글에서|인터넷에서|좀|하나|한번)\s*", " ", clean)
+        clean = re.sub(r"(으로|로|을|를|이|가|에서)\s*$", "", clean.strip())
+        clean = re.sub(r'[\\/*?:"<>|.,!_]+', " ", clean)
+        clean = "_".join(clean.split()).strip("_")
+        return clean[:30] if clean else "웹_풍경"
