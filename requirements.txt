@@ -1,0 +1,6 @@
+﻿python-fasthtml
+PyAudio
+SpeechRecognition
+openai
+colour-science
+python-dotenv
