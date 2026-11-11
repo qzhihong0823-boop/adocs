@@ -1252,12 +1252,16 @@ def render_smart_window_calendar() -> FT:
 
     day_cells = []
     for week in month_weeks:
-        for d in week:
+        for col_idx, d in enumerate(week):
             if d == 0:
                 day_cells.append(Div(cls="gcal-day-cell day-empty"))
                 continue
             date_str = f"{year:04d}-{month:02d}-{d:02d}"
             cls_parts = ["gcal-day-cell"]
+            if col_idx == 0:
+                cls_parts.append("day-sun")
+            elif col_idx == 6:
+                cls_parts.append("day-sat")
             if date_str == today_str:
                 cls_parts.append("day-today")
             if date_str == selected_date:
@@ -1266,10 +1270,11 @@ def render_smart_window_calendar() -> FT:
                 Span(cls=f"gcal-dot dot-{c if c in GCAL_COLOR_CLASSES else 'blue'}")
                 for c in event_colors.get(d, [])[:3]
             ]
+            dots_container = Div(*dots, cls="gcal-event-dots") if dots else Div(cls="gcal-event-dots empty")
             day_cells.append(
                 Button(
-                    Span(str(d)),
-                    Div(*dots, cls="gcal-event-dots"),
+                    Span(str(d), cls="gcal-day-num"),
+                    dots_container,
                     type="button",
                     cls=" ".join(cls_parts),
                     hx_post=f"/api/calendar/select?date_str={date_str}",
@@ -1316,21 +1321,32 @@ def render_smart_window_calendar() -> FT:
     return Div(
         Div(
             Div(
+                Span("📅", cls="gcal-brand-icon"),
                 Div(
                     Div("Google Calendar", cls="gcal-brand-sub"),
                     Div(f"{year}년 {month}월", cls="gcal-brand-title"),
+                    cls="gcal-brand-text",
                 ),
                 cls="gcal-brand",
             ),
             Div(nav_btn("◀", -1, "이전 달"), nav_btn("오늘", 0, "오늘"), nav_btn("▶", 1, "다음 달"), cls="gcal-nav-btns"),
             cls="gcal-header",
         ),
-        Div(*[Span(d) for d in ("일", "월", "화", "수", "목", "금", "토")], cls="gcal-weekdays"),
+        Div(
+            Span("일", cls="gcal-weekday sun"),
+            Span("월", cls="gcal-weekday"),
+            Span("화", cls="gcal-weekday"),
+            Span("수", cls="gcal-weekday"),
+            Span("목", cls="gcal-weekday"),
+            Span("금", cls="gcal-weekday"),
+            Span("토", cls="gcal-weekday sat"),
+            cls="gcal-weekdays",
+        ),
         Div(*day_cells, cls="gcal-grid"),
         Div(cls="hud-divider"),
         Div(
             Span(f"📌 {selected_date}"),
-            Span(f"{len(selected_events)}건"),
+            Span(f"{len(selected_events)}건", cls="gcal-agenda-count"),
             cls="gcal-agenda-header",
         ),
         Div(*agenda_items, cls="gcal-agenda-list"),
