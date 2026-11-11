@@ -1451,23 +1451,23 @@ button.success:hover {
     top: 6.5vh;
     left: calc(4.5vw + 346px);
     z-index: 26;
-    width: clamp(310px, 26vw, 370px);
-    padding: 16px 18px;
+    width: clamp(310px, 26vw, 360px);
+    padding: 18px 20px;
     border-radius: 20px;
     background: linear-gradient(145deg,
-            rgba(15, 23, 42, 0.42) 0%,
-            rgba(15, 23, 42, 0.22) 100%);
-    backdrop-filter: blur(14px);
-    -webkit-backdrop-filter: blur(14px);
+            rgba(15, 23, 42, 0.28) 0%,
+            rgba(15, 23, 42, 0.12) 100%);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
     border: 1px solid rgba(255, 255, 255, 0.22);
-    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.40);
+    box-shadow: 0 16px 36px rgba(0, 0, 0, 0.35);
     color: rgba(255, 255, 255, 0.96);
     text-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
     user-select: none;
     pointer-events: auto;
     display: flex;
     flex-direction: column;
-    gap: 10px;
+    gap: 11px;
     box-sizing: border-box;
     animation: hudGlassFadeIn 0.45s cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -1489,11 +1489,11 @@ button.success:hover {
 .gcal-brand {
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: 8px;
 }
 
 .gcal-brand-icon {
-    font-size: 1.35rem;
+    font-size: 1.25rem;
     line-height: 1;
     filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
 }
@@ -1505,7 +1505,7 @@ button.success:hover {
 }
 
 .gcal-brand-sub {
-    font-size: 0.68rem;
+    font-size: 0.66rem;
     font-weight: 600;
     color: rgba(147, 197, 253, 0.95);
     letter-spacing: 0.8px;
@@ -1523,7 +1523,7 @@ button.success:hover {
 .gcal-nav-btns {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 5px;
 }
 
 .gcal-nav-btn {
@@ -1532,11 +1532,11 @@ button.success:hover {
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
-    background: rgba(255, 255, 255, 0.12) !important;
-    border: 1px solid rgba(255, 255, 255, 0.22) !important;
+    background: rgba(255, 255, 255, 0.10) !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
     color: #ffffff !important;
     padding: 4px 10px !important;
-    border-radius: 8px !important;
+    border-radius: 999px !important;
     font-size: 0.74rem !important;
     font-weight: 600 !important;
     cursor: pointer !important;
@@ -1545,8 +1545,8 @@ button.success:hover {
 }
 
 .gcal-nav-btn:hover {
-    background: rgba(255, 255, 255, 0.24) !important;
-    border-color: rgba(255, 255, 255, 0.45) !important;
+    background: rgba(255, 255, 255, 0.22) !important;
+    border-color: rgba(255, 255, 255, 0.40) !important;
     transform: translateY(-1px);
 }
 
@@ -1558,17 +1558,17 @@ button.success:hover {
 .gcal-weekdays {
     display: grid !important;
     grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
-    gap: 4px !important;
+    gap: 2px !important;
     width: 100% !important;
     text-align: center;
-    padding: 4px 0 2px 0;
+    padding: 2px 0 4px 0;
     box-sizing: border-box;
 }
 
 .gcal-weekday {
-    font-size: 0.72rem;
+    font-size: 0.75rem;
     font-weight: 700;
-    color: rgba(255, 255, 255, 0.68);
+    color: rgba(255, 255, 255, 0.65);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -1576,23 +1576,23 @@ button.success:hover {
 }
 
 .gcal-weekday.sun {
-    color: #fca5a5;
+    color: #f87171;
 }
 
 .gcal-weekday.sat {
-    color: #93c5fd;
+    color: #60a5fa;
 }
 
 /* 7열 날짜 그리드 */
 .gcal-grid {
     display: grid !important;
     grid-template-columns: repeat(7, minmax(0, 1fr)) !important;
-    gap: 4px !important;
+    gap: 2px !important;
     width: 100% !important;
     box-sizing: border-box;
 }
 
-/* 개별 날짜 셀: 비율 1:1 완벽한 네모 칸 정렬 */
+/* 개별 날짜 셀: 구글 캘린더 스타일 순수 투명 셀 + 원형 숫자 뱃지 */
 .gcal-day-cell {
     all: unset !important;
     box-sizing: border-box !important;
@@ -1601,86 +1601,87 @@ button.success:hover {
     align-items: center !important;
     justify-content: center !important;
     width: 100% !important;
-    aspect-ratio: 1 / 1 !important;
-    min-height: 0 !important;
-    border-radius: 9px !important;
+    height: 38px !important;
+    border-radius: 8px !important;
     cursor: pointer !important;
     position: relative !important;
-    background: rgba(255, 255, 255, 0.04) !important;
-    border: 1px solid rgba(255, 255, 255, 0.08) !important;
+    background: transparent !important;
+    border: none !important;
     color: rgba(255, 255, 255, 0.92) !important;
-    transition: background 0.15s ease, border-color 0.15s ease, transform 0.1s ease !important;
-    padding: 2px !important;
+    transition: all 0.15s ease !important;
+    padding: 0 !important;
     margin: 0 !important;
     font-family: inherit !important;
     line-height: 1 !important;
 }
 
-.gcal-day-cell:hover:not(.day-empty):not(.day-today) {
-    background: rgba(255, 255, 255, 0.18) !important;
-    border-color: rgba(255, 255, 255, 0.35) !important;
-    transform: scale(1.04);
+.gcal-day-cell:hover:not(.day-other-month):not(.day-today) .gcal-day-num {
+    background: rgba(255, 255, 255, 0.16);
 }
 
-.gcal-day-cell.day-empty {
+/* 다른 달 날짜: 흐린 텍스트로 그리드 채움 */
+.gcal-day-cell.day-other-month {
     pointer-events: none !important;
-    background: transparent !important;
-    border-color: transparent !important;
     cursor: default !important;
-    opacity: 0;
+    opacity: 0.28 !important;
 }
 
-/* 요일별 색상 구분 */
-.gcal-day-cell.day-sun .gcal-day-num {
+/* 날짜 번호: 28px 완전 원형(Circle) */
+.gcal-day-num {
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.82rem;
+    font-weight: 500;
+    line-height: 1;
+    color: rgba(255, 255, 255, 0.92);
+    transition: all 0.15s ease;
+    box-sizing: border-box;
+}
+
+/* 주말 색상 */
+.gcal-day-cell.day-sun:not(.day-other-month) .gcal-day-num {
     color: #fca5a5;
 }
 
-.gcal-day-cell.day-sat .gcal-day-num {
+.gcal-day-cell.day-sat:not(.day-other-month) .gcal-day-num {
     color: #93c5fd;
 }
 
-/* 오늘 날짜: 구글 캘린더 시그니처 블루 하이라이트 */
-.gcal-day-cell.day-today {
-    background: linear-gradient(135deg, #1a73e8 0%, #1557b0 100%) !important;
-    border: 1px solid rgba(147, 197, 253, 0.95) !important;
-    box-shadow: 0 4px 12px rgba(26, 115, 232, 0.50) !important;
-    transform: scale(1.02);
-}
-
+/* 오늘 날짜: 구글 캘린더 시그니처 블루 원형 배지 */
 .gcal-day-cell.day-today .gcal-day-num {
+    background: #1a73e8 !important;
     color: #ffffff !important;
-    font-weight: 800 !important;
-    text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+    font-weight: 700 !important;
+    box-shadow: 0 2px 8px rgba(26, 115, 232, 0.55) !important;
 }
 
-/* 선택된 날짜: 선명한 화이트 아웃라인 & 글래스 하이라이트 */
-.gcal-day-cell.day-selected {
-    border: 2px solid rgba(255, 255, 255, 0.92) !important;
-    background: rgba(255, 255, 255, 0.22) !important;
+/* 선택된 날짜: 선명한 화이트 아웃라인 원형 */
+.gcal-day-cell.day-selected:not(.day-today) .gcal-day-num {
+    border: 2px solid rgba(255, 255, 255, 0.90) !important;
+    background: rgba(255, 255, 255, 0.18) !important;
+    font-weight: 700 !important;
+    color: #ffffff !important;
 }
 
-.gcal-day-cell.day-today.day-selected {
-    background: linear-gradient(135deg, #1a73e8 0%, #1557b0 100%) !important;
+.gcal-day-cell.day-today.day-selected .gcal-day-num {
+    background: #1a73e8 !important;
     border: 2px solid #ffffff !important;
-    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.4), 0 4px 14px rgba(26, 115, 232, 0.6) !important;
+    box-shadow: 0 0 0 2px rgba(26, 115, 232, 0.5), 0 2px 10px rgba(26, 115, 232, 0.7) !important;
 }
 
-.gcal-day-num {
-    font-size: clamp(0.76rem, 0.92vw, 0.88rem);
-    font-weight: 600;
-    line-height: 1;
-    display: block;
-}
-
-/* 일정 인디케이터 점(도트): 셀 높이에 영향을 주지 않도록 고정 높이 확보 */
+/* 일정 인디케이터 도트(점) */
 .gcal-event-dots {
     display: flex;
     gap: 2.5px;
     align-items: center;
     justify-content: center;
-    height: 5px;
-    margin-top: 3px;
-    min-height: 5px;
+    height: 4px;
+    margin-top: 1px;
+    min-height: 4px;
 }
 
 .gcal-event-dots.empty {
@@ -1688,8 +1689,8 @@ button.success:hover {
 }
 
 .gcal-dot {
-    width: 4px;
-    height: 4px;
+    width: 3.5px;
+    height: 3.5px;
     border-radius: 50%;
     background: #38bdf8;
     box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35);
@@ -1708,7 +1709,7 @@ button.success:hover {
     background: #fb7185;
 }
 
-/* 일정 목록 영역 */
+/* 일정 목록 헤더 */
 .gcal-agenda-header {
     display: flex;
     justify-content: space-between;
@@ -1719,34 +1720,53 @@ button.success:hover {
     padding: 0 2px;
 }
 
+.gcal-agenda-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 0.80rem;
+    font-weight: 600;
+    color: #ffffff;
+}
+
+.gcal-agenda-icon {
+    font-size: 0.90rem;
+    line-height: 1;
+}
+
+.gcal-agenda-date {
+    letter-spacing: -0.2px;
+}
+
 .gcal-agenda-count {
-    background: rgba(33, 137, 255, 0.28);
-    border: 1px solid rgba(147, 197, 253, 0.45);
+    background: rgba(33, 137, 255, 0.22);
+    border: 1px solid rgba(147, 197, 253, 0.40);
     color: #93c5fd;
-    padding: 1px 7px;
+    padding: 2px 8px;
     border-radius: 999px;
-    font-size: 0.68rem;
+    font-size: 0.70rem;
     font-weight: 700;
 }
 
+/* 일정 리스트: 스크롤바 최적화 및 반투명 글래스 카드 */
 .gcal-agenda-list {
     display: flex;
     flex-direction: column;
-    gap: 5px;
-    max-height: 110px;
+    gap: 6px;
+    max-height: 135px;
     overflow-y: auto;
-    padding-right: 2px;
+    padding-right: 4px;
     scrollbar-width: thin;
-    scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+    scrollbar-color: rgba(255, 255, 255, 0.25) transparent;
 }
 
 .gcal-agenda-list::-webkit-scrollbar {
-    width: 4px;
+    width: 3px;
 }
 
 .gcal-agenda-list::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.3);
-    border-radius: 4px;
+    background: rgba(255, 255, 255, 0.25);
+    border-radius: 3px;
 }
 
 .gcal-event-item {
@@ -1754,11 +1774,13 @@ button.success:hover {
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 6px 9px;
-    border-radius: 8px;
-    background: rgba(15, 23, 42, 0.45);
-    border: 1px solid rgba(255, 255, 255, 0.16);
+    padding: 7px 10px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.12);
     border-left: 3.5px solid #38bdf8;
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
     box-sizing: border-box;
 }
 
@@ -1777,20 +1799,20 @@ button.success:hover {
 .gcal-event-main {
     display: flex;
     flex-direction: column;
-    gap: 1px;
+    gap: 2px;
     min-width: 0;
     flex: 1;
 }
 
 .gcal-event-time {
-    font-size: 0.66rem;
+    font-size: 0.68rem;
     color: rgba(147, 197, 253, 0.95);
     font-variant-numeric: tabular-nums;
     font-weight: 600;
 }
 
 .gcal-event-title {
-    font-size: 0.78rem;
+    font-size: 0.80rem;
     font-weight: 500;
     color: #ffffff;
     white-space: nowrap;
@@ -1806,11 +1828,11 @@ button.success:hover {
     justify-content: center !important;
     background: transparent !important;
     border: none !important;
-    color: rgba(255, 255, 255, 0.55) !important;
+    color: rgba(255, 255, 255, 0.45) !important;
     width: 22px !important;
     height: 22px !important;
-    border-radius: 5px !important;
-    font-size: 0.75rem !important;
+    border-radius: 50% !important;
+    font-size: 0.74rem !important;
     cursor: pointer !important;
     transition: all 0.15s ease !important;
     flex-shrink: 0 !important;
@@ -1818,10 +1840,10 @@ button.success:hover {
 
 .gcal-del-btn:hover {
     color: #ffffff !important;
-    background: rgba(239, 68, 68, 0.45) !important;
+    background: rgba(239, 68, 68, 0.40) !important;
 }
 
-/* 일정 추가 폼 */
+/* 일정 추가 폼: 높이 36px 완벽 정렬 */
 .gcal-add-form {
     display: flex;
     gap: 6px;
@@ -1832,14 +1854,15 @@ button.success:hover {
 }
 
 .gcal-input-time {
-    width: 64px !important;
+    width: 62px !important;
+    height: 36px !important;
     flex-shrink: 0;
-    background: rgba(15, 23, 42, 0.50) !important;
-    border: 1px solid rgba(255, 255, 255, 0.25) !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
     color: #ffffff !important;
-    padding: 6px 6px !important;
-    border-radius: 8px !important;
-    font-size: 0.74rem !important;
+    padding: 0 4px !important;
+    border-radius: 9px !important;
+    font-size: 0.78rem !important;
     text-align: center !important;
     box-sizing: border-box;
 }
@@ -1847,12 +1870,13 @@ button.success:hover {
 .gcal-input-title {
     flex: 1;
     min-width: 0;
-    background: rgba(15, 23, 42, 0.50) !important;
-    border: 1px solid rgba(255, 255, 255, 0.25) !important;
+    height: 36px !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
     color: #ffffff !important;
-    padding: 6px 9px !important;
-    border-radius: 8px !important;
-    font-size: 0.74rem !important;
+    padding: 0 10px !important;
+    border-radius: 9px !important;
+    font-size: 0.78rem !important;
     box-sizing: border-box;
 }
 
@@ -1865,7 +1889,7 @@ button.success:hover {
 
 .gcal-input-title::placeholder,
 .gcal-input-time::placeholder {
-    color: rgba(255, 255, 255, 0.50);
+    color: rgba(255, 255, 255, 0.45);
 }
 
 .gcal-add-btn {
@@ -1874,25 +1898,24 @@ button.success:hover {
     display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
-    background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
-    border: 1px solid rgba(147, 197, 253, 0.6) !important;
+    background: #1a73e8 !important;
     color: #ffffff !important;
-    width: 32px !important;
-    height: 30px !important;
-    border-radius: 8px !important;
-    font-size: 1.05rem !important;
+    width: 36px !important;
+    height: 36px !important;
+    border-radius: 9px !important;
+    font-size: 1.15rem !important;
     font-weight: 700 !important;
     cursor: pointer !important;
     flex-shrink: 0 !important;
     line-height: 1 !important;
     transition: all 0.15s ease !important;
-    box-shadow: 0 2px 6px rgba(37, 99, 235, 0.35) !important;
+    box-shadow: 0 2px 8px rgba(26, 115, 232, 0.45) !important;
 }
 
 .gcal-add-btn:hover {
-    background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
+    background: #1557b0 !important;
     transform: translateY(-1px);
-    box-shadow: 0 4px 10px rgba(37, 99, 235, 0.5) !important;
+    box-shadow: 0 4px 12px rgba(26, 115, 232, 0.6) !important;
 }
 
 .gcal-add-btn:active {
@@ -1941,8 +1964,8 @@ button.success:hover {
 }
 
 .smart-overlay-dock .smart-window-calendar {
-    width: clamp(290px, 26vw, 370px);
-    padding: 16px 18px;
+    width: clamp(300px, 26vw, 360px);
+    padding: 18px 20px;
     pointer-events: auto;
 }
 

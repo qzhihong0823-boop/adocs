@@ -1247,41 +1247,53 @@ def render_smart_window_calendar() -> FT:
     month = calendar_mgr.view_month
     selected_date = calendar_mgr.selected_date
     today_str = datetime.now().strftime("%Y-%m-%d")
-    month_weeks = calendar.Calendar(firstweekday=6).monthdayscalendar(year, month)
+    cal_dates = list(calendar.Calendar(firstweekday=6).itermonthdates(year, month))
     event_colors = calendar_mgr.get_month_event_colors(year, month)
 
     day_cells = []
-    for week in month_weeks:
-        for col_idx, d in enumerate(week):
-            if d == 0:
-                day_cells.append(Div(cls="gcal-day-cell day-empty"))
-                continue
-            date_str = f"{year:04d}-{month:02d}-{d:02d}"
-            cls_parts = ["gcal-day-cell"]
-            if col_idx == 0:
-                cls_parts.append("day-sun")
-            elif col_idx == 6:
-                cls_parts.append("day-sat")
-            if date_str == today_str:
-                cls_parts.append("day-today")
-            if date_str == selected_date:
-                cls_parts.append("day-selected")
-            dots = [
-                Span(cls=f"gcal-dot dot-{c if c in GCAL_COLOR_CLASSES else 'blue'}")
-                for c in event_colors.get(d, [])[:3]
-            ]
-            dots_container = Div(*dots, cls="gcal-event-dots") if dots else Div(cls="gcal-event-dots empty")
+    for idx, dt in enumerate(cal_dates):
+        col_idx = idx % 7
+        date_str = dt.strftime("%Y-%m-%d")
+        is_cur_month = (dt.month == month)
+        cls_parts = ["gcal-day-cell"]
+
+        if col_idx == 0:
+            cls_parts.append("day-sun")
+        elif col_idx == 6:
+            cls_parts.append("day-sat")
+
+        if not is_cur_month:
+            cls_parts.append("day-other-month")
             day_cells.append(
-                Button(
-                    Span(str(d), cls="gcal-day-num"),
-                    dots_container,
-                    type="button",
+                Div(
+                    Span(str(dt.day), cls="gcal-day-num"),
+                    Div(cls="gcal-event-dots empty"),
                     cls=" ".join(cls_parts),
-                    hx_post=f"/api/calendar/select?date_str={date_str}",
-                    hx_target="#window-scene-stage",
-                    hx_swap="outerHTML",
                 )
             )
+            continue
+
+        if date_str == today_str:
+            cls_parts.append("day-today")
+        if date_str == selected_date:
+            cls_parts.append("day-selected")
+
+        dots = [
+            Span(cls=f"gcal-dot dot-{c if c in GCAL_COLOR_CLASSES else 'blue'}")
+            for c in event_colors.get(dt.day, [])[:3]
+        ]
+        dots_container = Div(*dots, cls="gcal-event-dots") if dots else Div(cls="gcal-event-dots empty")
+        day_cells.append(
+            Button(
+                Span(str(dt.day), cls="gcal-day-num"),
+                dots_container,
+                type="button",
+                cls=" ".join(cls_parts),
+                hx_post=f"/api/calendar/select?date_str={date_str}",
+                hx_target="#window-scene-stage",
+                hx_swap="outerHTML",
+            )
+        )
 
     selected_events = calendar_mgr.get_events_for_date(selected_date)
     if selected_events:
@@ -1345,7 +1357,11 @@ def render_smart_window_calendar() -> FT:
         Div(*day_cells, cls="gcal-grid"),
         Div(cls="hud-divider"),
         Div(
-            Span(f"📌 {selected_date}"),
+            Div(
+                Span("📅", cls="gcal-agenda-icon"),
+                Span(f"{selected_date} 일정", cls="gcal-agenda-date"),
+                cls="gcal-agenda-title-wrap",
+            ),
             Span(f"{len(selected_events)}건", cls="gcal-agenda-count"),
             cls="gcal-agenda-header",
         ),
