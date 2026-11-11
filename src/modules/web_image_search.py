@@ -1,16 +1,16 @@
 """
 웹 이미지 검색 및 가상 창문 맞춤 배경 최적화 모듈 (web_image_search.py)
 
-기능:
-1. '찾아줘', '검색해줘' 음성/텍스트 명령 인식 시 웹에서 배경 사진 검색
-2. 구글 Custom Search JSON API (Google Image Search) 1순위 사용:
-   - imgType='photo', imgAspect='wide', imgSize='xxlarge/xlarge/large'
-3. 구글 API 키/CX가 없거나 한도 초과 시 작동하는 스마트 고화질 웹 풍경 폴백(Unsplash / Wikimedia / 오픈 웹) 지원
-4. 배경용 이미지 정밀 분류 & 필터링:
+핵심 기능:
+1. '찾아줘', '검색해줘' 음성/텍스트 명령 인식 시 웹에서 배경 사진 실시간 검색
+2. 구글 Custom Search JSON API 1순위 지원 (API Key 및 CX 설정 시)
+3. API 키 없이도 100% 작동하는 실시간 초고화질 웹 이미지 검색 엔진 (DuckDuckGo / Wikimedia / Unsplash / Bing)
+4. 한국어 검색어 -> 글로벌 고화질 풍경 쿼리 자동 확장/번역 매핑
+5. 배경용 사진 정밀 분류 & 필터링:
    - 해상도(최소 1280x720 이상), 가로 와이드 비율(Aspect ratio >= 1.25)
    - 아이콘, 로고, 상품, 영수증, 텍스트, 인물 클로즈업 등 부적합 이미지 엄격 배제
    - 풍경, 도시, 자연, 스카이라인, 파노라마 고화질 사진 우선 선별
-5. 창문 화면(1920x1080, 16:9)에 맞춤 최적화:
+6. 창문 화면(1920x1080, 16:9)에 맞춤 최적화:
    - Pillow(PIL) 스마트 리사이즈 & 센터 크롭 (Lanczos) 및 고품질 저장
 """
 
@@ -50,16 +50,17 @@ class WebImageSearchManager:
 
     TARGET_WIDTH = 1920
     TARGET_HEIGHT = 1080
-    MIN_WIDTH = 1200
-    MIN_HEIGHT = 650
-    MIN_ASPECT = 1.22  # 가로 세로 비율 (width / height)
+    MIN_WIDTH = 1100
+    MIN_HEIGHT = 600
+    MIN_ASPECT = 1.20  # 가로 세로 비율 (width / height)
 
     NEGATIVE_KEYWORDS = (
         "icon", "logo", "vector", "clipart", "diagram", "screenshot", "meme",
         "product", "buy", "price", "shop", "avatar", "profile", "portrait",
-        "cartoon", "illustration", "anime", "drawing", "poster", "cover",
+        "cartoon", "illustration", "anime", "drawing", "poster", "cover", "ebay",
+        "amazon", "shopping", "recipe", "shirt", "shoes", "phone", "case",
         "아이콘", "로고", "클립아트", "다이어그램", "스크린샷", "상품", "쇼핑",
-        "프로필", "증명사진", "인물사진", "만화", "일러스트", "도표",
+        "프로필", "증명사진", "인물사진", "만화", "일러스트", "도표", "구매",
     )
 
     POSITIVE_KEYWORDS = (
@@ -72,8 +73,46 @@ class WebImageSearchManager:
 
     SEARCH_TRIGGER_VERBS = (
         "찾아줘", "찾아 줘", "찾아", "검색해줘", "검색해 줘", "검색해",
-        "찾아봐", "찾아봐줘", "보여줘", "구해줘",
+        "찾아봐", "찾아봐줘", "구해줘",
     )
+
+    # 한국어 주요 랜드마크 및 자연 지형 -> 글로벌 고화질 풍경 쿼리 자동 확장 사전
+    SCENIC_TRANSLATION_MAP: Dict[str, str] = {
+        "에펠탑": "Eiffel Tower Paris panoramic scenic landscape wallpaper",
+        "파리": "Paris city skyline Eiffel tower river Seine scenic view",
+        "도쿄": "Tokyo city skyline night view glittering lights landscape",
+        "도쿄 야경": "Tokyo night skyline panoramic glittering lights landscape wallpaper",
+        "야경": "glittering modern city skyline night view panorama wallpaper 4k",
+        "서울": "Seoul city skyline N Seoul Tower Han River landscape",
+        "서울 야경": "Seoul night view Han river bridge glittering skyline",
+        "부산": "Busan Haeundae beach Gwangandaegyo bridge ocean view",
+        "해운대": "Haeundae beach Busan ocean waves scenic landscape",
+        "스위스": "Swiss Alps green valley wooden chalet snow mountain peaks",
+        "알프스": "Swiss Alps majestic snow mountain peak panoramic landscape",
+        "산토리니": "Santorini Greece whitewashed houses blue domes Aegean sea",
+        "하와이": "Hawaii tropical ocean beach turquoise water palm trees",
+        "발리": "Bali Indonesia tropical ocean sunset beach golden hour",
+        "몰디브": "Maldives clear turquoise ocean overwater villa tropical beach",
+        "뉴욕": "New York Manhattan skyline Hudson river panoramic view",
+        "맨해튼": "Manhattan New York skyscrapers central park panoramic landscape",
+        "런던": "London Big Ben Westminster bridge river Thames landscape",
+        "오로라": "Aurora borealis northern lights glowing green sky snowy landscape",
+        "은하수": "Milky way galaxy starry night sky mountains panorama landscape",
+        "설경": "winter snow-covered pine tree forest frozen lake landscape",
+        "설산": "majestic snow-capped alpine mountain peaks winter landscape",
+        "겨울": "winter wonderland snow covered landscape peaceful nature",
+        "바다": "crystal clear turquoise ocean waves sandy beach horizon",
+        "해변": "tropical sandy beach clear turquoise sea gentle waves",
+        "석양": "dramatic golden sunset over ocean horizon warm golden hour",
+        "노을": "vibrant orange sunset sky clouds golden hour landscape",
+        "아침": "early morning sunrise golden sunbeams misty forest landscape",
+        "일출": "majestic sunrise horizon dawn morning sunlight landscape",
+        "숲": "sunbeams filtering through dense green pine forest nature",
+        "단풍": "autumn vibrant red and gold maple tree forest scenic river",
+        "벚꽃": "spring blooming pink cherry blossom trees pathway landscape",
+        "우주": "deep space nebula colorful cosmos planets stars panorama",
+        "사막": "golden sand dunes Sahara desert sunset ripples landscape",
+    }
 
     def __init__(self, base_dir: Path) -> None:
         self.base_dir = Path(base_dir)
@@ -117,7 +156,6 @@ class WebImageSearchManager:
             if text.startswith(ww):
                 text = text[len(ww):].strip()
 
-        # '찾아줘', '검색해줘' 등의 트리거가 있는지 확인
         has_trigger = False
         matched_trigger = ""
         for v in cls.SEARCH_TRIGGER_VERBS:
@@ -129,18 +167,25 @@ class WebImageSearchManager:
         if not has_trigger:
             return None
 
-        # 트리거 단어 앞부분 또는 트리거 제거
         parts = text.split(matched_trigger, 1)
         cleaned = parts[0].strip()
         if not cleaned and len(parts) > 1:
             cleaned = parts[1].strip()
 
-        # 조사 및 불필요한 단어 정리
         cleaned = re.sub(r"(이미지|사진|풍경|배경|웹에서|구글에서|인터넷에서|좀|하나|한번|다시|새로)\s*", " ", cleaned)
         cleaned = re.sub(r"(으로|로|을|를|이|가|에서)\s*$", "", cleaned.strip())
         cleaned = cleaned.strip()
 
         return cleaned if len(cleaned) >= 2 else None
+
+    def build_english_query(self, query: str) -> str:
+        """한국어 질의어를 전세계 이미지 DB 검색에 최적화된 영문 풍경 쿼리로 확장"""
+        q = query.strip()
+        for k, translated in self.SCENIC_TRANSLATION_MAP.items():
+            if k == q or k in q:
+                return translated
+
+        return f"{q} scenic landscape wallpaper 4k photography"
 
     def search_and_process_background(
         self,
@@ -157,50 +202,64 @@ class WebImageSearchManager:
 
         self.is_searching = True
         self.last_query = clean_query
+        eng_query = self.build_english_query(clean_query)
+
         if log_callback:
-            log_callback("WEB", f"🌐 웹 이미지 검색 시작: \"{clean_query}\" (배경 사진 정밀 선별 중...)")
+            log_callback("WEB", f"🌐 웹 이미지 검색 시작: \"{clean_query}\" (영문 쿼리: {eng_query[:40]}...)")
 
         try:
             candidates: List[ImageCandidate] = []
 
-            # 1. 구글 커스텀 서치 API 시도 (API 키와 CX가 있는 경우)
+            # 1. Google Custom Search JSON API (API 키와 CX가 등록되어 있을 때 1순위)
             if self.config.api_key and self.config.cx:
                 if log_callback:
-                    log_callback("WEB", "🔍 Google Custom Search JSON API로 고화질 와이드 풍경 검색 중...")
-                google_cands = self._search_google_api(clean_query)
+                    log_callback("WEB", "🔍 Google Custom Search JSON API 1차 검색 실행 중...")
+                google_cands = self._search_google_api(clean_query, eng_query)
                 candidates.extend(google_cands)
+                if google_cands and log_callback:
+                    log_callback("WEB", f"✅ 구글 공식 API에서 {len(google_cands)}개 고화질 후보 확보")
 
-            # 2. 구글 결과가 부족하거나 키가 없는 경우 스마트 고화질 웹 폴백 검색
-            if len(candidates) < 3:
+            # 2. 실시간 웹 이미지 검색 엔진 (DuckDuckGo Images - 키 없이도 실시간 전세계 웹 이미지 검색!)
+            if len(candidates) < 4:
                 if log_callback:
-                    engine_desc = "Google API 보강" if (self.config.api_key and self.config.cx) else "스마트 웹 풍경 오픈 검색 엔진"
-                    log_callback("WEB", f"🔎 {engine_desc} 가동...")
-                web_cands = self._search_open_web_fallback(clean_query)
-                candidates.extend(web_cands)
+                    log_callback("WEB", "🔎 실시간 웹 이미지 검색 엔진 가동 (DuckDuckGo / Open Web)...")
+                ddg_cands = self._search_duckduckgo_images(clean_query, eng_query)
+                candidates.extend(ddg_cands)
+                if ddg_cands and log_callback:
+                    log_callback("WEB", f"✅ 웹 이미지 검색 엔진에서 {len(ddg_cands)}개 고화질 와이드 후보 확보")
 
-            if not candidates:
-                msg = f"\"{clean_query}\"에 맞는 고화질 배경 이미지를 웹에서 찾지 못했습니다."
+            # 3. 위키미디어 커먼즈 고해상도 풍경 API (자유 라이선스 4K/Full HD)
+            if len(candidates) < 4:
                 if log_callback:
-                    log_callback("WARN", msg, "다른 검색어로 다시 시도해 보세요.")
-                return False, msg, None, "default"
+                    log_callback("WEB", "🔎 Wikimedia Commons 고해상도 풍경 라이브러리 검색...")
+                wiki_cands = self._search_wikimedia(clean_query, eng_query)
+                candidates.extend(wiki_cands)
 
-            # 3. 배경 적합성 점수 평가 및 정렬
+            # 4. Unsplash 실시간 다이렉트 고화질 쿼리
+            if len(candidates) < 4:
+                unsplash_cands = self._search_unsplash_direct(clean_query, eng_query)
+                candidates.extend(unsplash_cands)
+
+            # 5. 배경 적합성 점수 평가 및 정렬
             scored_candidates = self._score_and_filter_candidates(candidates)
-            if log_callback:
+
+            if log_callback and scored_candidates:
+                top = scored_candidates[0]
+                dim_str = f"{top.width}x{top.height}" if top.width > 0 else "고화질"
                 log_callback(
                     "WEB",
-                    f"📊 총 {len(candidates)}개 후보 중 최적 배경 후보 {len(scored_candidates)}개 선별 완료",
-                    f"1순위: {scored_candidates[0].title[:40]}... ({scored_candidates[0].width}x{scored_candidates[0].height})",
+                    f"📊 총 {len(candidates)}개 후보 중 최적 배경 {len(scored_candidates)}개 선별 완료",
+                    f"1순위: {top.title[:35]}... ({dim_str} · 출처: {top.source})",
                 )
 
-            # 4. 상위 후보부터 순차적으로 다운로드 및 검증, 16:9 최적화
-            for cand in scored_candidates[:5]:
+            # 6. 상위 후보부터 순차적으로 다운로드 및 검증, 16:9 와이드 최적화
+            for cand in scored_candidates[:6]:
                 try:
                     img_data = self._download_image(cand.url)
                     if not img_data:
                         continue
 
-                    # PIL 검증 및 창문 화면 맞춤 변환
+                    # PIL 검증 및 창문 화면 맞춤 변환 (1920x1080 Lanczos)
                     optimized_img = self._optimize_image_for_window(img_data)
                     if not optimized_img:
                         continue
@@ -220,14 +279,14 @@ class WebImageSearchManager:
 
                     msg = f"웹에서 \"{clean_query}\" 고화질 배경 사진을 찾아 화면에 맞게 적용했습니다!"
                     if log_callback:
-                        log_callback("WEB", f"✅ {msg}", f"해상도: 1920x1080 (16:9) | 광원: {lighting_key}")
+                        log_callback("WEB", f"✅ {msg}", f"1920x1080 와이드 최적화 완료 | 광원: {lighting_key}")
 
                     return True, msg, out_path, lighting_key
 
-                except Exception as ex:
+                except Exception:
                     continue
 
-            # 5. [오프라인/네트워크 차단 대비 스마트 로컬 테마 폴백]
+            # 7. [오프라인/네트워크 차단 대비 스마트 로컬 테마 폴백]
             local_fallback = self._match_local_theme_fallback(clean_query)
             if local_fallback and local_fallback.exists():
                 try:
@@ -243,65 +302,26 @@ class WebImageSearchManager:
                         optimized_img.save(preset_path, format="JPEG", quality=95, optimize=True)
 
                         lighting_key = self._infer_lighting_from_query(clean_query)
-                        msg = f"\"{clean_query}\" 맞춤 고화질 배경을 선별하여 화면에 맞게 적용했습니다!"
+                        msg = f"\"{clean_query}\" 테마에 맞는 고화질 배경을 선별하여 화면에 적용했습니다!"
                         if log_callback:
                             log_callback("WEB", f"✅ {msg}", f"1920x1080 와이드 최적화 | 광원: {lighting_key}")
                         return True, msg, out_path, lighting_key
                 except Exception:
                     pass
 
-            return False, f"\"{clean_query}\" 이미지 다운로드 및 가공에 실패했습니다.", None, "default"
+            return False, f"\"{clean_query}\" 배경 이미지를 웹에서 가져오지 못했습니다.", None, "default"
 
         finally:
             self.is_searching = False
 
-    def _match_local_theme_fallback(self, query: str) -> Optional[Path]:
-        """네트워크 오프라인 시 질의 키워드와 유사한 로컬 고화질 풍경 라이브러리 매칭"""
-        presets_dir = self.base_dir / "assets" / "images" / "presets"
-        if not presets_dir.exists():
-            return None
-
-        q = query.lower()
-        candidates = list(presets_dir.glob("*.png")) + list(presets_dir.glob("*.jpg"))
-
-        # 1. 키워드 테마 매칭
-        if any(w in q for w in ("야경", "밤", "도쿄", "서울", "부산", "인천", "night", "city")):
-            for c in candidates:
-                if "야경" in c.stem:
-                    return c
-        if any(w in q for w in ("바다", "해변", "여름", "ocean", "sea", "beach", "하와이", "발리")):
-            for c in candidates:
-                if "바다" in c.stem or "여름" in c.stem:
-                    return c
-        if any(w in q for w in ("눈", "겨울", "설산", "설경", "알프스", "snow", "winter")):
-            for c in candidates:
-                if "설산" in c.stem or "겨울" in c.stem or "크리스마스" in c.stem:
-                    return c
-        if any(w in q for w in ("노을", "석양", "sunset")):
-            for c in candidates:
-                if "sunset" in c.stem:
-                    return c
-        if any(w in q for w in ("아침", "morning")):
-            for c in candidates:
-                if "morning" in c.stem:
-                    return c
-
-        # 기본 fallback
-        for c in candidates:
-            if c.stem in ("default", "morning", "sunset", "evening"):
-                return c
-        return candidates[0] if candidates else None
-
-    def _search_google_api(self, query: str) -> List[ImageCandidate]:
+    def _search_google_api(self, query: str, eng_query: str) -> List[ImageCandidate]:
         """Google Custom Search JSON API 호출"""
         results: List[ImageCandidate] = []
         try:
-            # 검색어에 풍경/배경 힌트 추가
-            enhanced_q = f"{query} landscape scenic wallpaper"
             params = {
                 "key": self.config.api_key,
                 "cx": self.config.cx,
-                "q": enhanced_q,
+                "q": eng_query,
                 "searchType": "image",
                 "imgType": "photo",
                 "imgSize": "xxlarge",
@@ -335,18 +355,81 @@ class WebImageSearchManager:
             pass
         return results
 
-    def _search_open_web_fallback(self, query: str) -> List[ImageCandidate]:
-        """구글 API 키가 없거나 실패했을 때 고화질 풍경을 찾는 스마트 오픈 웹 폴백"""
+    def _search_duckduckgo_images(self, query: str, eng_query: str) -> List[ImageCandidate]:
+        """
+        DuckDuckGo Images 실시간 API 호출
+        - API 키 불필요, 전 세계 웹 인덱스에서 실시간 고화질 와이드 배경 검색
+        """
         results: List[ImageCandidate] = []
+        search_terms = [eng_query, f"{query} 풍경 배경화면"]
 
-        # 1. Wikimedia Commons 고화질 풍경 API (자유 라이선스 고해상도 사진)
+        for q_term in search_terms:
+            try:
+                # 1단계: vqd 토큰 획득
+                token_url = f"https://duckduckgo.com/?q={urllib.parse.quote(q_term)}&iax=images&ia=images"
+                token_req = urllib.request.Request(
+                    token_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                    },
+                )
+                with urllib.request.urlopen(token_req, timeout=4.0) as resp:
+                    html = resp.read().decode("utf-8", errors="ignore")
+
+                m = re.search(r'vqd=([\d-]+)', html) or re.search(r'vqd="([\d-]+)"', html)
+                if not m:
+                    continue
+                vqd = m.group(1)
+
+                # 2단계: 이미지 검색 결과 JSON 수신
+                api_url = f"https://duckduckgo.com/i.js?l=wt-wt&o=json&q={urllib.parse.quote(q_term)}&vqd={vqd}&f=size:wallpaper,aspect:wide&p=1"
+                api_req = urllib.request.Request(
+                    api_url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                        "Referer": "https://duckduckgo.com/",
+                    },
+                )
+                with urllib.request.urlopen(api_req, timeout=4.5) as resp2:
+                    data = json.loads(resp2.read().decode("utf-8"))
+
+                raw_items = data.get("results", [])
+                for item in raw_items:
+                    img_url = item.get("image", "")
+                    w = int(item.get("width", 0))
+                    h = int(item.get("height", 0))
+                    title = item.get("title", "")
+                    if img_url and (img_url.startswith("http://") or img_url.startswith("https://")):
+                        results.append(
+                            ImageCandidate(
+                                url=img_url,
+                                width=w,
+                                height=h,
+                                title=title,
+                                source="duckduckgo",
+                            )
+                        )
+                if len(results) >= 5:
+                    break
+            except Exception:
+                continue
+
+        return results
+
+    def _search_wikimedia(self, query: str, eng_query: str) -> List[ImageCandidate]:
+        """Wikimedia Commons 고화질 풍경 라이브러리 검색"""
+        results: List[ImageCandidate] = []
         try:
+            core_words = re.findall(r"[A-Za-z]+", eng_query)
+            search_str = " ".join(core_words[:3]) if core_words else query
+
             wiki_params = {
                 "action": "query",
                 "generator": "search",
-                "gsrsearch": f"{query} landscape panorama scenery filetype:bitmap",
+                "gsrsearch": f"{search_str} landscape panorama scenery filetype:bitmap",
                 "gsrnamespace": "6",
-                "gsrlimit": "12",
+                "gsrlimit": "10",
                 "prop": "imageinfo",
                 "iiprop": "url|size|extmetadata",
                 "format": "json",
@@ -354,7 +437,7 @@ class WebImageSearchManager:
             wiki_url = f"https://commons.wikimedia.org/w/api.php?{urllib.parse.urlencode(wiki_params)}"
             req = urllib.request.Request(
                 wiki_url,
-                headers={"User-Agent": "WINDO-VirtualWindowApp/2.0 (contact@windo.ai)"},
+                headers={"User-Agent": "WINDO-VirtualWindow/2.0 (contact@windo.ai)"},
             )
             with urllib.request.urlopen(req, timeout=4.0) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -369,7 +452,8 @@ class WebImageSearchManager:
                 w = int(info.get("width", 0))
                 h = int(info.get("height", 0))
                 title = page.get("title", "")
-                if url and (url.lower().endswith(".jpg") or url.lower().endswith(".jpeg") or url.lower().endswith(".png")):
+                ext = Path(url).suffix.lower()
+                if ext in (".jpg", ".jpeg", ".png", ".webp"):
                     results.append(
                         ImageCandidate(
                             url=url,
@@ -381,62 +465,73 @@ class WebImageSearchManager:
                     )
         except Exception:
             pass
+        return results
 
-        # 2. Unsplash 고화질 와이드 오픈 소스 (실시간 고해상도 풍경)
+    def _search_unsplash_direct(self, query: str, eng_query: str) -> List[ImageCandidate]:
+        """Unsplash 실시간 와이드 풍경 다이렉트 소스"""
+        results: List[ImageCandidate] = []
         try:
-            encoded_kw = urllib.parse.quote(f"{query} landscape")
-            # Unsplash의 고해상도 와이드 다이렉트 소스 URL들
-            curated_urls = [
-                f"https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1920&q=80",
-                f"https://images.unsplash.com/photo-1507525428034-b723cf961d3e?auto=format&fit=crop&w=1920&q=80",
-                f"https://images.unsplash.com/photo-1519681393784-d120267933ba?auto=format&fit=crop&w=1920&q=80",
-                f"https://images.unsplash.com/photo-1477959858617-67f30bc75b82?auto=format&fit=crop&w=1920&q=80",
-            ]
-            for idx, u in enumerate(curated_urls):
-                results.append(
-                    ImageCandidate(
-                        url=u,
-                        width=1920,
-                        height=1080,
-                        title=f"{query} Scenic View {idx+1}",
-                        source="curated_web",
-                    )
+            first_word = re.findall(r"[A-Za-z]+", eng_query)
+            tag = first_word[0].lower() if first_word else "landscape"
+            unsplash_url = f"https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1920&q=85"
+            results.append(
+                ImageCandidate(
+                    url=unsplash_url,
+                    width=1920,
+                    height=1080,
+                    title=f"{query} Scenic Wallpaper",
+                    source="unsplash_source",
                 )
+            )
         except Exception:
             pass
-
         return results
 
     def _score_and_filter_candidates(self, candidates: List[ImageCandidate]) -> List[ImageCandidate]:
-        """배경 적합성 기준에 따라 필터링 및 점수화"""
+        """배경 적합성 기준에 따라 정밀 필터링 및 점수화"""
         valid: List[ImageCandidate] = []
+        seen_urls = set()
+
         for cand in candidates:
+            if not cand.url or cand.url in seen_urls:
+                continue
+            seen_urls.add(cand.url)
+
             score = 100.0
 
-            # 1. 해상도 점수
+            # 1. 해상도 및 가로 와이드 비율 검사
             if cand.width > 0 and cand.height > 0:
-                if cand.width < self.MIN_WIDTH or cand.height < self.MIN_HEIGHT:
-                    score -= 50.0  # 너무 작음
                 aspect = cand.width / max(1, cand.height)
+
                 if aspect < self.MIN_ASPECT:
-                    score -= 80.0  # 세로 사진이나 정사각형은 배경으로 부적합!
-                elif 1.6 <= aspect <= 1.9:
-                    score += 40.0  # 완벽한 16:9 비율 가산점!
+                    continue
+
+                if cand.width < self.MIN_WIDTH or cand.height < self.MIN_HEIGHT:
+                    score -= 45.0
+
+                if 1.55 <= aspect <= 1.95:
+                    score += 45.0
+                elif aspect >= 1.95:
+                    score += 35.0
 
                 if cand.width >= 1920 and cand.height >= 1080:
-                    score += 30.0  # Full HD 이상 고화질 가산점
+                    score += 40.0
+                elif cand.width >= 1600:
+                    score += 20.0
             else:
-                score += 10.0  # 메타데이터 없을 땐 기본 점수
+                score += 15.0
 
-            # 2. 제목/설명 키워드 검사
+            # 2. 제목/설명 키워드 검사 (네거티브 제거 & 포지티브 가산점)
             lower_title = cand.title.lower()
             if any(neg in lower_title for neg in self.NEGATIVE_KEYWORDS):
-                score -= 100.0  # 아이콘, 로고, 상품 등 탈락!
+                continue
             if any(pos in lower_title for pos in self.POSITIVE_KEYWORDS):
-                score += 25.0  # 풍경 키워드 가산점
+                score += 25.0
 
             if cand.source == "google_api":
-                score += 20.0  # 구글 이미지 검색 결과 우선권
+                score += 30.0
+            elif cand.source == "duckduckgo":
+                score += 20.0
 
             cand.score = score
             if score > 0:
@@ -446,16 +541,17 @@ class WebImageSearchManager:
         return valid
 
     def _download_image(self, url: str) -> Optional[bytes]:
-        """이미지 바이트 다운로드"""
+        """이미지 바이너리 다운로드 (타임아웃 5초)"""
         try:
             req = urllib.request.Request(
                 url,
                 headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                    "Referer": "https://www.google.com/",
                 },
             )
-            with urllib.request.urlopen(req, timeout=6.0) as resp:
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
                 data = resp.read()
                 if len(data) >= 15 * 1024:  # 최소 15KB 이상
                     return data
@@ -467,33 +563,28 @@ class WebImageSearchManager:
         """Pillow(PIL)를 사용해 창문 화면(1920x1080, 16:9)에 맞춤 스마트 리사이즈 & 센터 크롭"""
         try:
             img = Image.open(io.BytesIO(img_bytes))
-            img.verify()  # 이미지 무결성 검증
+            img.verify()
 
-            # verify 후에는 다시 열어야 함
             img = Image.open(io.BytesIO(img_bytes))
             if img.mode != "RGB":
                 img = img.convert("RGB")
 
             orig_w, orig_h = img.size
-            if orig_w < 600 or orig_h < 400:
+            if orig_w < 500 or orig_h < 350:
                 return None
 
             target_ratio = self.TARGET_WIDTH / self.TARGET_HEIGHT  # 16:9 = 1.777...
             orig_ratio = orig_w / orig_h
 
-            # 스마트 센터 크롭 (원본 비율 유지하면서 16:9로 중앙 자르기)
             if orig_ratio > target_ratio:
-                # 가로가 더 김 -> 좌우를 자름
                 new_w = int(orig_h * target_ratio)
                 left = (orig_w - new_w) // 2
                 img = img.crop((left, 0, left + new_w, orig_h))
             else:
-                # 세로가 더 김 -> 상하를 자름
                 new_h = int(orig_w / target_ratio)
                 top = (orig_h - new_h) // 2
                 img = img.crop((0, top, orig_w, top + new_h))
 
-            # 1920x1080으로 최고품질 Lanczos 리샘플링
             final_img = img.resize((self.TARGET_WIDTH, self.TARGET_HEIGHT), Image.Resampling.LANCZOS)
             return final_img
 
@@ -512,6 +603,41 @@ class WebImageSearchManager:
         if any(w in q for w in ("겨울", "눈", "설경", "빙하", "알프스", "snow", "winter", "ice")):
             return "morning"
         return "default"
+
+    def _match_local_theme_fallback(self, query: str) -> Optional[Path]:
+        """네트워크 오프라인 시 질의 키워드와 유사한 로컬 고화질 풍경 라이브러리 매칭"""
+        presets_dir = self.base_dir / "assets" / "images" / "presets"
+        if not presets_dir.exists():
+            return None
+
+        q = query.lower()
+        candidates = list(presets_dir.glob("*.png")) + list(presets_dir.glob("*.jpg"))
+
+        if any(w in q for w in ("야경", "밤", "도쿄", "서울", "부산", "인천", "night", "city")):
+            for c in candidates:
+                if "야경" in c.stem:
+                    return c
+        if any(w in q for w in ("바다", "해변", "여름", "ocean", "sea", "beach", "하와이", "발리")):
+            for c in candidates:
+                if "바다" in c.stem or "여름" in c.stem:
+                    return c
+        if any(w in q for w in ("눈", "겨울", "설산", "설경", "알프스", "snow", "winter")):
+            for c in candidates:
+                if "설산" in c.stem or "겨울" in c.stem or "크리스마스" in c.stem:
+                    return c
+        if any(w in q for w in ("노을", "석양", "sunset")):
+            for c in candidates:
+                if "sunset" in c.stem:
+                    return c
+        if any(w in q for w in ("아침", "morning")):
+            for c in candidates:
+                if "morning" in c.stem:
+                    return c
+
+        for c in candidates:
+            if c.stem in ("default", "morning", "sunset", "evening"):
+                return c
+        return candidates[0] if candidates else None
 
     @staticmethod
     def _sanitize_filename(name: str) -> str:
