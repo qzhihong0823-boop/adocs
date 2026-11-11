@@ -21,7 +21,8 @@
     padding: 0;
 }
 
-html, body {
+html,
+body {
     font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, 'Malgun Gothic', sans-serif;
     width: 100vw;
     height: 100vh;
@@ -87,6 +88,7 @@ html, body {
         opacity: 0;
         transform: scale(1.012);
     }
+
     100% {
         opacity: 1;
         transform: scale(1.0);
@@ -164,23 +166,53 @@ html, body {
     animation: loadingDotBounce 1.2s infinite ease-in-out both;
 }
 
-.window-loading-dots span:nth-child(1) { animation-delay: -0.24s; }
-.window-loading-dots span:nth-child(2) { animation-delay: -0.12s; }
-.window-loading-dots span:nth-child(3) { animation-delay: 0s; }
+.window-loading-dots span:nth-child(1) {
+    animation-delay: -0.24s;
+}
+
+.window-loading-dots span:nth-child(2) {
+    animation-delay: -0.12s;
+}
+
+.window-loading-dots span:nth-child(3) {
+    animation-delay: 0s;
+}
 
 @keyframes windowSpin {
-    0% { transform: rotate(0deg); }
-    100% { transform: rotate(360deg); }
+    0% {
+        transform: rotate(0deg);
+    }
+
+    100% {
+        transform: rotate(360deg);
+    }
 }
 
 @keyframes loadingDotBounce {
-    0%, 80%, 100% { transform: scale(0.4); opacity: 0.4; }
-    40% { transform: scale(1.0); opacity: 1; }
+
+    0%,
+    80%,
+    100% {
+        transform: scale(0.4);
+        opacity: 0.4;
+    }
+
+    40% {
+        transform: scale(1.0);
+        opacity: 1;
+    }
 }
 
 @keyframes loadingBadgePulse {
-    0%, 100% { transform: translateY(0px); }
-    50% { transform: translateY(-3px); }
+
+    0%,
+    100% {
+        transform: translateY(0px);
+    }
+
+    50% {
+        transform: translateY(-3px);
+    }
 }
 
 /* =========================================================================
@@ -247,8 +279,13 @@ html, body {
 }
 
 @keyframes slideInDrawer {
-    from { transform: translateX(100%); }
-    to { transform: translateX(0); }
+    from {
+        transform: translateX(100%);
+    }
+
+    to {
+        transform: translateX(0);
+    }
 }
 
 .drawer-header {
@@ -570,6 +607,7 @@ button.secondary {
     color: #1e293b;
     border: 1px solid #cbd5e1;
 }
+
 button.secondary:hover {
     background: #e2e8f0;
 }
@@ -578,6 +616,7 @@ button.success {
     background: var(--ss-blue);
     color: #ffffff;
 }
+
 button.success:hover {
     background: var(--ss-blue-dark);
 }
@@ -647,8 +686,16 @@ button.success:hover {
     border-bottom: 1px solid #dee2e6;
 }
 
-.mic-label { color: #4b5563; font-size: 0.78rem; font-weight: 600; }
-.mic-name { color: #0284c7; font-size: 0.81rem; }
+.mic-label {
+    color: #4b5563;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.mic-name {
+    color: #0284c7;
+    font-size: 0.81rem;
+}
 
 .speech-highlight-bar {
     padding: 9px 14px;
@@ -705,9 +752,22 @@ button.success:hover {
     word-break: break-word;
 }
 
-.highlight-label { color: #4b5563; font-size: 0.78rem; font-weight: 600; }
-.highlight-raw { color: #7c3aed; font-size: 0.86rem; margin-right: 12px; }
-.highlight-cmd { color: #15803d; font-size: 0.9rem; }
+.highlight-label {
+    color: #4b5563;
+    font-size: 0.78rem;
+    font-weight: 600;
+}
+
+.highlight-raw {
+    color: #7c3aed;
+    font-size: 0.86rem;
+    margin-right: 12px;
+}
+
+.highlight-cmd {
+    color: #15803d;
+    font-size: 0.9rem;
+}
 
 .status-badge {
     display: inline-flex;
@@ -717,11 +777,35 @@ button.success:hover {
     font-size: 0.73rem;
     font-weight: 700;
 }
-.status-idle { background: #e5e7eb; color: #374151; }
-.status-listening { background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
-.status-wake_detected { background: #fef3c7; color: #b45309; border: 1px solid #fcd34d; }
-.status-transcribing { background: #dbeafe; color: #1d4ed8; border: 1px solid #93c5fd; }
-.status-error { background: #fee2e2; color: #b91c1c; border: 1px solid #fca5a5; }
+
+.status-idle {
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.status-listening {
+    background: #dcfce7;
+    color: #15803d;
+    border: 1px solid #86efac;
+}
+
+.status-wake_detected {
+    background: #fef3c7;
+    color: #b45309;
+    border: 1px solid #fcd34d;
+}
+
+.status-transcribing {
+    background: #dbeafe;
+    color: #1d4ed8;
+    border: 1px solid #93c5fd;
+}
+
+.status-error {
+    background: #fee2e2;
+    color: #b91c1c;
+    border: 1px solid #fca5a5;
+}
 
 .terminal-body {
     flex: 1;
@@ -747,7 +831,11 @@ button.success:hover {
     border: 1px solid #e5e7eb;
 }
 
-.log-time { color: #6b7280; font-size: 0.72rem; }
+.log-time {
+    color: #6b7280;
+    font-size: 0.72rem;
+}
+
 .log-tag {
     font-size: 0.68rem;
     font-weight: 700;
@@ -756,17 +844,56 @@ button.success:hover {
     min-width: 54px;
     text-align: center;
 }
-.tag-SYSTEM { background: #e5e7eb; color: #374151; }
-.tag-MIC { background: #e0f2fe; color: #0369a1; }
-.tag-DETECT { background: #f3e8ff; color: #6d28d9; }
-.tag-WAKE { background: #fef3c7; color: #b45309; }
-.tag-STT { background: #dcfce7; color: #15803d; }
-.tag-WARN { background: #ffedd5; color: #c2410c; }
-.tag-ERROR { background: #fee2e2; color: #b91c1c; }
 
-.log-msg { color: #1f2937; word-break: break-word; }
-.log-msg-STT { color: #15803d; font-weight: 700; }
-.log-detail { color: #6b7280; font-size: 0.72rem; }
+.tag-SYSTEM {
+    background: #e5e7eb;
+    color: #374151;
+}
+
+.tag-MIC {
+    background: #e0f2fe;
+    color: #0369a1;
+}
+
+.tag-DETECT {
+    background: #f3e8ff;
+    color: #6d28d9;
+}
+
+.tag-WAKE {
+    background: #fef3c7;
+    color: #b45309;
+}
+
+.tag-STT {
+    background: #dcfce7;
+    color: #15803d;
+}
+
+.tag-WARN {
+    background: #ffedd5;
+    color: #c2410c;
+}
+
+.tag-ERROR {
+    background: #fee2e2;
+    color: #b91c1c;
+}
+
+.log-msg {
+    color: #1f2937;
+    word-break: break-word;
+}
+
+.log-msg-STT {
+    color: #15803d;
+    font-weight: 700;
+}
+
+.log-detail {
+    color: #6b7280;
+    font-size: 0.72rem;
+}
 
 /* =========================================================================
    5. ComfyUI 실시간 노드 그래프 뷰어 & 설정 패널 스타일
@@ -907,11 +1034,31 @@ button.success:hover {
     text-transform: uppercase;
 }
 
-.badge-idle { background: #334155; color: #cbd5e1; }
-.badge-running { background: #0284c7; color: #ffffff; animation: loadingPulse 1s infinite ease-in-out; }
-.badge-done { background: #15803d; color: #dcfce7; }
-.badge-skipped { background: #475569; color: #94a3b8; }
-.badge-error { background: #b91c1c; color: #fee2e2; }
+.badge-idle {
+    background: #334155;
+    color: #cbd5e1;
+}
+
+.badge-running {
+    background: #0284c7;
+    color: #ffffff;
+    animation: loadingPulse 1s infinite ease-in-out;
+}
+
+.badge-done {
+    background: #15803d;
+    color: #dcfce7;
+}
+
+.badge-skipped {
+    background: #475569;
+    color: #94a3b8;
+}
+
+.badge-error {
+    background: #b91c1c;
+    color: #fee2e2;
+}
 
 .comfy-node-summary {
     font-size: 0.73rem;
@@ -980,13 +1127,994 @@ button.success:hover {
     .drawer-body {
         grid-template-columns: 1fr;
     }
+
     .settings-drawer {
         width: 100vw;
     }
+
     .comfy-nodes-flow {
         grid-template-columns: 1fr;
     }
+
     .comfy-node-card.node-span-2 {
         grid-column: span 1;
+    }
+}
+
+/* =========================================================================
+   6. 스마트 창문 실시간 HUD 오버레이 (시간 · 날짜 · 기온 · 습도 · 24시간 그래프)
+   - 레퍼런스 이미지와 동일한 투명 스마트 글래스 에칭(Etched Smart Glass) 디자인
+   - 처음에는 숨겨져 있다가 "정보", "정보 보여줘" 음성 명령 시 화면 좌측에 표시됨
+   ========================================================================= */
+@keyframes hudGlassFadeIn {
+    0% {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+
+    100% {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.smart-window-hud {
+    position: fixed;
+    top: 6.5vh;
+    left: 4.5vw;
+    z-index: 25;
+    width: 326px;
+    padding: 20px 24px;
+    border-radius: 20px;
+    background: linear-gradient(145deg,
+            rgba(15, 23, 42, 0.24) 0%,
+            rgba(15, 23, 42, 0.10) 100%);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border: 1px solid rgba(255, 255, 255, 0.24);
+    color: rgba(255, 255, 255, 0.96);
+    text-shadow: 0 2px 12px rgba(0, 0, 0, 0.45), 0 0 24px rgba(0, 0, 0, 0.22);
+    user-select: none;
+    pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    gap: 13px;
+    animation: hudGlassFadeIn 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.hud-time-section {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.hud-clock-text {
+    font-size: 4.35rem;
+    font-weight: 300;
+    line-height: 1.0;
+    letter-spacing: -1.5px;
+    color: rgba(255, 255, 255, 0.97);
+    font-variant-numeric: tabular-nums;
+}
+
+.hud-date-text {
+    font-size: 0.96rem;
+    font-weight: 500;
+    letter-spacing: 2.2px;
+    text-transform: uppercase;
+    color: rgba(255, 255, 255, 0.88);
+    margin-top: 4px;
+}
+
+.hud-date-sub {
+    font-size: 0.78rem;
+    font-weight: 400;
+    letter-spacing: 0.6px;
+    color: rgba(255, 255, 255, 0.74);
+}
+
+.hud-divider {
+    width: 100%;
+    height: 1px;
+    background: linear-gradient(90deg,
+            rgba(255, 255, 255, 0.58) 0%,
+            rgba(255, 255, 255, 0.14) 100%);
+}
+
+.hud-metric-row {
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 2px 0;
+}
+
+.hud-icon-wrap {
+    width: 48px;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    filter: drop-shadow(0 2px 8px rgba(0, 0, 0, 0.38));
+}
+
+.hud-metric-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.hud-metric-primary {
+    font-size: 2.05rem;
+    font-weight: 300;
+    line-height: 1.1;
+    letter-spacing: -0.5px;
+    color: rgba(255, 255, 255, 0.96);
+    font-variant-numeric: tabular-nums;
+}
+
+.hud-metric-secondary {
+    font-size: 0.84rem;
+    font-weight: 400;
+    letter-spacing: 0.4px;
+    color: rgba(255, 255, 255, 0.82);
+}
+
+/* 하단 24시간 실시간 트렌드 바 차트 (레퍼런스 사진 완벽 재현) */
+.hud-chart-section {
+    margin-top: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.hud-chart-body {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+    height: 92px;
+}
+
+.hud-chart-yaxis {
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    font-size: 0.68rem;
+    font-weight: 400;
+    color: rgba(255, 255, 255, 0.72);
+    padding-bottom: 2px;
+    text-align: right;
+    min-width: 18px;
+    font-variant-numeric: tabular-nums;
+}
+
+.hud-chart-plot {
+    flex: 1;
+    position: relative;
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 4px;
+    padding-bottom: 2px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.36);
+    background-image: linear-gradient(to bottom,
+            rgba(255, 255, 255, 0.16) 1px,
+            transparent 1px);
+    background-size: 100% 30px;
+}
+
+.hud-chart-bar {
+    flex: 1;
+    border-radius: 2px 2px 0 0;
+    min-height: 6px;
+    transition: height 0.4s ease;
+    box-shadow: 0 0 8px rgba(125, 211, 252, 0.25);
+}
+
+.hud-chart-bar.bar-white {
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.90) 0%, rgba(255, 255, 255, 0.42) 100%);
+}
+
+.hud-chart-bar.bar-blue {
+    background: linear-gradient(180deg, rgba(125, 211, 252, 0.95) 0%, rgba(56, 189, 248, 0.48) 100%);
+}
+
+.hud-chart-bar.bar-active {
+    background: linear-gradient(180deg, #ffffff 0%, #38bdf8 100%);
+    box-shadow: 0 0 12px rgba(255, 255, 255, 0.85);
+}
+
+.hud-chart-xaxis {
+    display: flex;
+    justify-content: space-between;
+    padding-left: 26px;
+    font-size: 0.68rem;
+    font-weight: 400;
+    letter-spacing: 0.5px;
+    color: rgba(255, 255, 255, 0.78);
+    font-variant-numeric: tabular-nums;
+}
+
+/* =========================================================================
+   7. 실내 공기질(IAQ) & AI 위험도 판정 · 공기청정기 작동 안내 섹션 (정보 창 하단)
+   ========================================================================= */
+.hud-iaq-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    padding-top: 2px;
+}
+
+.hud-iaq-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.hud-iaq-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    color: rgba(255, 255, 255, 0.94);
+}
+
+.hud-iaq-badge {
+    font-size: 0.74rem;
+    font-weight: 700;
+    padding: 3px 9px;
+    border-radius: 999px;
+    letter-spacing: 0.3px;
+    backdrop-filter: blur(4px);
+}
+
+.iaq-safe {
+    background: rgba(16, 185, 129, 0.32);
+    border: 1px solid rgba(52, 211, 153, 0.65);
+    color: #d1fae5;
+}
+
+.iaq-moderate {
+    background: rgba(56, 189, 248, 0.28);
+    border: 1px solid rgba(125, 211, 252, 0.62);
+    color: #e0f2fe;
+}
+
+.iaq-warn {
+    background: rgba(245, 158, 11, 0.36);
+    border: 1px solid rgba(251, 191, 36, 0.78);
+    color: #fef3c7;
+    box-shadow: 0 0 12px rgba(245, 158, 11, 0.35);
+}
+
+.iaq-danger {
+    background: rgba(239, 68, 68, 0.44);
+    border: 1px solid rgba(248, 113, 113, 0.85);
+    color: #fee2e2;
+    box-shadow: 0 0 14px rgba(239, 68, 68, 0.48);
+    animation: loadingPulse 1.4s infinite ease-in-out;
+}
+
+.hud-iaq-metrics {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}
+
+.hud-iaq-pill {
+    background: rgba(255, 255, 255, 0.10);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 8px;
+    padding: 5px 7px;
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+}
+
+.hud-iaq-pill-label {
+    font-size: 0.64rem;
+    color: rgba(255, 255, 255, 0.72);
+    letter-spacing: 0.3px;
+}
+
+.hud-iaq-pill-val {
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.96);
+    font-variant-numeric: tabular-nums;
+}
+
+.hud-iaq-action-note {
+    font-size: 0.73rem;
+    line-height: 1.42;
+    padding: 7px 10px;
+    border-radius: 9px;
+    background: rgba(15, 23, 42, 0.32);
+    border: 1px solid rgba(255, 255, 255, 0.22);
+    color: rgba(255, 255, 255, 0.92);
+}
+
+.hud-iaq-action-note.action-danger {
+    background: linear-gradient(135deg, rgba(185, 28, 28, 0.38) 0%, rgba(217, 119, 6, 0.30) 100%);
+    border-color: rgba(252, 165, 165, 0.65);
+    color: #fffbeb;
+}
+
+/* =========================================================================
+   8. 스마트 창문 구글 캘린더(Google Calendar) 글래스 위젯 (정보 창 우측 배치)
+   ========================================================================= */
+.smart-window-calendar {
+    position: fixed;
+    top: 6.5vh;
+    left: calc(4.5vw + 346px);
+    z-index: 26;
+    width: 392px;
+    padding: 20px 22px;
+    border-radius: 20px;
+    background: linear-gradient(145deg,
+            rgba(15, 23, 42, 0.26) 0%,
+            rgba(15, 23, 42, 0.12) 100%);
+    backdrop-filter: blur(7px);
+    -webkit-backdrop-filter: blur(7px);
+    border: 1px solid rgba(255, 255, 255, 0.26);
+    color: rgba(255, 255, 255, 0.96);
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.42);
+    user-select: none;
+    pointer-events: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    animation: hudGlassFadeIn 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.gcal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+}
+
+.gcal-brand {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.gcal-brand-title {
+    font-size: 1.05rem;
+    font-weight: 600;
+    letter-spacing: 0.4px;
+    color: #ffffff;
+}
+
+.gcal-brand-sub {
+    font-size: 0.72rem;
+    font-weight: 500;
+    color: rgba(147, 197, 253, 0.92);
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.gcal-nav-btns {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.gcal-nav-btn {
+    background: rgba(255, 255, 255, 0.12) !important;
+    border: 1px solid rgba(255, 255, 255, 0.24) !important;
+    color: #ffffff !important;
+    padding: 3px 9px !important;
+    border-radius: 7px !important;
+    font-size: 0.74rem !important;
+    font-weight: 600 !important;
+    cursor: pointer;
+}
+
+.gcal-nav-btn:hover {
+    background: rgba(255, 255, 255, 0.24) !important;
+}
+
+.gcal-weekdays {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    text-align: center;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.75);
+    padding-bottom: 2px;
+}
+
+.gcal-weekdays span:first-child {
+    color: #fca5a5;
+}
+
+.gcal-weekdays span:last-child {
+    color: #93c5fd;
+}
+
+.gcal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 3px;
+}
+
+.gcal-day-cell {
+    height: 36px;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.80rem;
+    font-weight: 500;
+    color: rgba(255, 255, 255, 0.92);
+    cursor: pointer;
+    position: relative;
+    background: transparent;
+    border: 1px solid transparent;
+    transition: all 0.15s ease;
+    padding: 0;
+}
+
+.gcal-day-cell:hover {
+    background: rgba(255, 255, 255, 0.16);
+}
+
+.gcal-day-cell.day-empty {
+    pointer-events: none;
+}
+
+.gcal-day-cell.day-today {
+    background: rgba(33, 137, 255, 0.52);
+    border-color: rgba(147, 197, 253, 0.85);
+    color: #ffffff;
+    font-weight: 800;
+    box-shadow: 0 0 10px rgba(33, 137, 255, 0.45);
+}
+
+.gcal-day-cell.day-selected {
+    background: rgba(255, 255, 255, 0.22);
+    border-color: rgba(255, 255, 255, 0.78);
+    font-weight: 700;
+}
+
+.gcal-event-dots {
+    display: flex;
+    gap: 2px;
+    margin-top: 2px;
+    height: 4px;
+}
+
+.gcal-dot {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: #38bdf8;
+}
+
+.gcal-dot.dot-green {
+    background: #4ade80;
+}
+
+.gcal-dot.dot-amber {
+    background: #fbbf24;
+}
+
+.gcal-dot.dot-rose {
+    background: #fb7185;
+}
+
+.gcal-agenda-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.88);
+}
+
+.gcal-agenda-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 135px;
+    overflow-y: auto;
+    padding-right: 2px;
+}
+
+.gcal-event-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 10px;
+    border-radius: 9px;
+    background: rgba(15, 23, 42, 0.30);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-left: 3.5px solid #38bdf8;
+}
+
+.gcal-event-item.ev-green {
+    border-left-color: #4ade80;
+}
+
+.gcal-event-item.ev-amber {
+    border-left-color: #fbbf24;
+}
+
+.gcal-event-item.ev-rose {
+    border-left-color: #fb7185;
+}
+
+.gcal-event-main {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+
+.gcal-event-time {
+    font-size: 0.68rem;
+    color: rgba(147, 197, 253, 0.95);
+    font-variant-numeric: tabular-nums;
+}
+
+.gcal-event-title {
+    font-size: 0.80rem;
+    font-weight: 500;
+    color: #ffffff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.gcal-del-btn {
+    background: transparent !important;
+    border: none !important;
+    color: rgba(255, 255, 255, 0.65) !important;
+    padding: 2px 6px !important;
+    font-size: 0.74rem !important;
+    cursor: pointer;
+}
+
+.gcal-del-btn:hover {
+    color: #fca5a5 !important;
+}
+
+.gcal-add-form {
+    display: flex;
+    gap: 5px;
+    align-items: center;
+    margin-top: 2px;
+}
+
+.gcal-input-time {
+    width: 72px !important;
+    background: rgba(15, 23, 42, 0.38) !important;
+    border: 1px solid rgba(255, 255, 255, 0.28) !important;
+    color: #ffffff !important;
+    padding: 5px 7px !important;
+    border-radius: 7px !important;
+    font-size: 0.75rem !important;
+}
+
+.gcal-input-title {
+    flex: 1;
+    background: rgba(15, 23, 42, 0.38) !important;
+    border: 1px solid rgba(255, 255, 255, 0.28) !important;
+    color: #ffffff !important;
+    padding: 5px 8px !important;
+    border-radius: 7px !important;
+    font-size: 0.75rem !important;
+}
+
+.gcal-input-title::placeholder,
+.gcal-input-time::placeholder {
+    color: rgba(255, 255, 255, 0.58);
+}
+
+.gcal-add-btn {
+    background: rgba(33, 137, 255, 0.65) !important;
+    border: 1px solid rgba(147, 197, 253, 0.75) !important;
+    color: #ffffff !important;
+    padding: 5px 10px !important;
+    border-radius: 7px !important;
+    font-size: 0.75rem !important;
+    font-weight: 700 !important;
+    white-space: nowrap;
+}
+
+
+/* =========================================================================
+   9. 반응형 오버레이 도크 (정보 창 + 구글 캘린더)
+   - 두 위젯을 한 줄로 나란히 배치하고, 정보 창이 꺼지면 캘린더가 자동으로 왼쪽에 붙음
+   - 창 크기가 작아지면 자동 줄바꿈 + 크기 축소 + 스크롤
+   ========================================================================= */
+.smart-overlay-dock {
+    position: fixed;
+    top: clamp(12px, 6vh, 64px);
+    left: clamp(12px, 4.5vw, 72px);
+    right: clamp(12px, 4.5vw, 72px);
+    max-height: calc(100vh - clamp(24px, 12vh, 128px));
+    z-index: 25;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: clamp(10px, 1.4vw, 20px);
+    overflow-y: auto;
+    overflow-x: hidden;
+    pointer-events: none;
+    scrollbar-width: none;
+}
+
+.smart-overlay-dock::-webkit-scrollbar {
+    display: none;
+}
+
+.smart-overlay-dock .smart-window-hud,
+.smart-overlay-dock .smart-window-calendar {
+    position: relative;
+    top: auto;
+    left: auto;
+    flex: 0 1 auto;
+    max-width: 100%;
+}
+
+.smart-overlay-dock .smart-window-hud {
+    width: clamp(240px, 24vw, 326px);
+    padding: clamp(14px, 1.6vw, 22px) clamp(16px, 1.8vw, 24px);
+}
+
+.smart-overlay-dock .smart-window-calendar {
+    width: clamp(280px, 28vw, 392px);
+    padding: clamp(14px, 1.6vw, 20px) clamp(14px, 1.6vw, 22px);
+    pointer-events: auto;
+}
+
+.smart-overlay-dock .hud-clock-text {
+    font-size: clamp(2.6rem, 5vw, 4.35rem);
+}
+
+.smart-overlay-dock .hud-metric-primary {
+    font-size: clamp(1.4rem, 2.4vw, 2.05rem);
+}
+
+.hud-iaq-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.gcal-empty-msg {
+    font-size: 0.74rem;
+    color: rgba(255, 255, 255, 0.7);
+    padding: 6px 2px;
+}
+
+.gcal-day-cell {
+    height: clamp(28px, 3.2vw, 36px);
+}
+
+.gcal-add-form .gcal-input-title {
+    min-width: 0;
+}
+
+@media (max-width: 720px) {
+    .smart-overlay-dock {
+        flex-direction: column;
+        flex-wrap: nowrap;
+    }
+
+    .smart-overlay-dock .smart-window-hud,
+    .smart-overlay-dock .smart-window-calendar {
+        width: min(100%, 380px);
+    }
+}
+
+@media (max-height: 640px) {
+    .smart-overlay-dock .hud-chart-body {
+        height: 60px;
+    }
+
+    .smart-overlay-dock .hud-clock-text {
+        font-size: 2.4rem;
+    }
+}
+
+/* =========================================================================
+   10. 설정 모달 가독성 & 반응형 재정렬
+   ========================================================================= */
+.settings-drawer {
+    width: min(1180px, 100vw);
+}
+
+.drawer-header {
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 14px clamp(14px, 2.4vw, 24px);
+}
+
+.drawer-brand {
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    min-width: 0;
+}
+
+.samsung-blue-banner {
+    font-size: clamp(0.72rem, 1.1vw, 0.84rem);
+    line-height: 1.45;
+    padding: 9px 14px;
+}
+
+.drawer-body {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+    padding: 18px clamp(12px, 2.4vw, 24px) 28px;
+    gap: 18px;
+}
+
+.drawer-col {
+    min-width: 0;
+}
+
+.option-card {
+    padding: 16px 18px;
+    gap: 12px;
+    min-width: 0;
+}
+
+.option-card-title {
+    flex-wrap: wrap;
+    row-gap: 8px;
+    font-size: 0.95rem;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eef1f5;
+}
+
+.option-card-title > span:first-child {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.option-card button {
+    white-space: normal;
+    line-height: 1.3;
+}
+
+.card-status-pill {
+    font-size: 0.72rem;
+    font-weight: 800;
+    padding: 4px 10px;
+    border-radius: 999px;
+    background: var(--ss-blue-bg);
+    color: var(--ss-blue-dark);
+    border: 1px solid rgba(33, 137, 255, 0.3);
+}
+
+.option-card-title .hud-iaq-badge {
+    text-shadow: none;
+    color: #0f172a;
+}
+
+.option-card-title .hud-iaq-badge.iaq-danger,
+.option-card-title .hud-iaq-badge.iaq-warn {
+    color: #7f1d1d;
+}
+
+/* 공통 2버튼 행 */
+.btn-row-2 {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+}
+
+/* 위젯 ON/OFF 토글 카드 */
+.widget-toggle-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 8px;
+}
+
+.widget-toggle {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 10px 12px;
+    background: #f8fafc;
+    color: #0f172a;
+    border: 1.5px solid #e2e8f0;
+    border-radius: 10px;
+    text-align: left;
+}
+
+.widget-toggle:hover {
+    background: #eff6ff;
+    border-color: #93c5fd;
+}
+
+.widget-toggle.on {
+    background: var(--ss-blue-bg);
+    border-color: var(--ss-blue);
+}
+
+.widget-toggle-icon {
+    font-size: 1.2rem;
+}
+
+.widget-toggle-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.widget-toggle-label {
+    font-size: 0.84rem;
+    font-weight: 800;
+}
+
+.widget-toggle-voice {
+    font-size: 0.68rem;
+    font-weight: 500;
+    color: var(--ss-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.widget-toggle-state {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.7rem;
+    font-weight: 800;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: #e2e8f0;
+    color: #475569;
+}
+
+.widget-toggle.on .widget-toggle-state {
+    background: var(--ss-blue);
+    color: #ffffff;
+}
+
+/* 실내 공기질 입력 카드 */
+.iaq-status-box {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+}
+
+.iaq-status-box.danger {
+    background: #fef2f2;
+    border-color: #fca5a5;
+}
+
+.iaq-status-head {
+    font-size: 0.72rem;
+    font-weight: 800;
+    color: #475569;
+}
+
+.iaq-status-msg {
+    font-size: 0.8rem;
+    line-height: 1.5;
+    color: #0f172a;
+}
+
+.iaq-status-box.danger .iaq-status-msg {
+    color: #991b1b;
+    font-weight: 600;
+}
+
+.iaq-input-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 10px;
+}
+
+.field-block {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.field-label {
+    font-size: 0.74rem;
+    font-weight: 700;
+    color: #334155;
+}
+
+.field-with-unit {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 6px;
+}
+
+.field-unit {
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--ss-text-muted);
+    min-width: 36px;
+}
+
+.quick-btn-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 6px;
+}
+
+.quick-btn {
+    padding: 8px 10px;
+    font-size: 0.78rem;
+}
+
+/* 기존 카드 요소 반응형 보정 */
+.lighting-metrics-grid {
+    grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+}
+
+.preset-btn-grid {
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+}
+
+.slider-row {
+    grid-template-columns: minmax(90px, 125px) minmax(0, 1fr);
+}
+
+.comfy-grid-2col {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.comfy-grid-4col {
+    grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+    gap: 8px;
+}
+
+.comfy-grid-2col > div,
+.comfy-grid-4col > div {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    min-width: 0;
+}
+
+.timeout-setting-row {
+    grid-template-columns: auto minmax(70px, 1fr) auto;
+}
+
+.terminal-wrapper-tall {
+    height: min(760px, 75vh);
+}
+
+@media (max-width: 560px) {
+    .drawer-title {
+        font-size: 0.86rem;
+    }
+
+    .slider-row {
+        grid-template-columns: 1fr;
+        gap: 4px;
+    }
+
+    .timeout-setting-row {
+        grid-template-columns: 1fr;
+    }
+
+    .inline-input-row {
+        grid-template-columns: 1fr;
+    }
+
+    .btn-row-2 {
+        grid-template-columns: 1fr 1fr;
     }
 }

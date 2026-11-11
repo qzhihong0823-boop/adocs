@@ -37,20 +37,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# 기본 긍정 프롬프트: '창문에서 바라보는 초고화질 8K 실사 풍경' 구도 및 광학 디테일 극대화
+# 기본 긍정 프롬프트: '최대한 현실적인 8K 초고화질 실사 배경' (불필요한 실내/창틀 없이 순수 실사 풍경 극대화)
 DEFAULT_POSITIVE_PROMPT: str = (
-    "breathtaking view looking out through a large modern panoramic window, "
-    "seen from inside looking outside at expansive nature, architectural window perspective, "
-    "crystal clear glass, photorealistic 8k UHD, shot on Hasselblad H6D-100c, 24mm wide-angle lens, f/8, "
-    "razor-sharp focus from foreground to distant horizon, hyper-detailed natural textures, "
-    "cinematic natural daylight, masterpiece, National Geographic award-winning photography"
+    "ultra-realistic real-world raw photograph, full-bleed expansive panoramic background vista, "
+    "photorealistic 8k UHD, shot on Hasselblad H6D-100c, 24mm wide-angle lens, f/8, ISO 64, "
+    "razor-sharp optical focus from foreground to distant horizon, hyper-detailed natural textures, "
+    "authentic physically accurate lighting and atmospheric depth, National Geographic award-winning nature and cityscape photography"
 )
 
-# 기본 부정 프롬프트: 저화질, 흐릿함, 왜곡, 글자, 인물 등 배제
+# 기본 부정 프롬프트: 창틀, 실내 벽, 저화질, 흐릿함, 왜곡, 글자, 인물, 일러스트 느낌 배제
 DEFAULT_NEGATIVE_PROMPT: str = (
+    "window frame, indoor room, wall, curtain, blinds, border, picture frame, mullion, "
     "low quality, worst quality, lowres, blurry, out of focus, pixelated, artifacts, "
     "distorted, deformed, ugly, text, watermark, signature, logo, people, human, person, "
-    "closed curtains, blinds blocking view, dark messy room, cartoon, anime, painting, illustration"
+    "CGI, 3d render, cartoon, anime, painting, illustration, artificial, fake"
 )
 
 LORA_TRIGGER_WORD: str = "best landscape"
@@ -183,6 +183,12 @@ class IntentInferenceEngine:
     # 오직 이 동사들이 포함되어야만 AI 이미지 생성을 수행합니다!
     GENERATION_VERBS: Tuple[str, ...] = (
         "만들어줘", "만들어 줘", "만들어", "그려줘", "그려 줘", "그려", "생성해줘", "생성해 줘", "생성해",
+    )
+
+    # 웹 이미지 검색 트리거 동사 ("찾아줘", "검색해줘" 등)
+    SEARCH_VERBS: Tuple[str, ...] = (
+        "찾아줘", "찾아 줘", "찾아", "검색해줘", "검색해 줘", "검색해",
+        "찾아봐", "찾아봐줘", "구해줘",
     )
 
     FORCE_REGEN_WORDS: Tuple[str, ...] = (
@@ -345,10 +351,29 @@ class IntentInferenceEngine:
         compact_core = core_phrase.replace(" ", "").replace("_", "")
 
         has_gen_verb = any(v in text_lower for v in cls.GENERATION_VERBS)
+        has_search_verb = any(v in text_lower for v in cls.SEARCH_VERBS)
         has_weather = any(k in text_lower for k in cls.WEATHER_MAP)
         has_location = any(k in text_lower for k in cls.LOCATION_MAP)
 
-        # Case A: 사용자가 명시적으로 "~ 만들어줘", "~ 그려줘"라고 말한 경우 -> 이미지 생성('generate')!
+        # Case A: 웹 이미지 검색 트리거 ("~ 찾아줘", "~ 검색해줘")
+        if has_search_verb and not has_gen_verb:
+            # 검색 키워드 정제
+            search_query = text
+            for ww in ("윈도우", "윈도", "window", "windo"):
+                if search_query.startswith(ww):
+                    search_query = search_query[len(ww):].strip()
+            for v in cls.SEARCH_VERBS:
+                if v in search_query:
+                    search_query = search_query.split(v, 1)[0].strip()
+                    break
+            # 불필요 조사 제거
+            search_query = re.sub(r"(이미지|사진|풍경|배경|웹에서|구글에서|인터넷에서|좀|하나|한번)\s*", " ", search_query)
+            search_query = re.sub(r"(으로|로|을|를|이|가|에서)\s*$", "", search_query.strip()).strip()
+            if len(search_query) >= 2:
+                location, weather, time_of_day, lighting_key = cls.extract_attributes(text)
+                return "search", search_query, (location, weather, time_of_day)
+
+        # Case B: 사용자가 명시적으로 "~ 만들어줘", "~ 그려줘"라고 말한 경우 -> 이미지 생성('generate')!
         if has_gen_verb:
             # 단, 특수 날씨/장소 없이 순수하게 "아침 만들어줘", "노을 만들어줘", "저녁 만들어줘"라고만 한 경우는 기본 프리셋 예외 처리
             if not has_weather and not has_location:
@@ -364,7 +389,7 @@ class IntentInferenceEngine:
             location, weather, time_of_day, lighting_key = cls.extract_attributes(text)
             return "generate", lighting_key, (location, weather, time_of_day)
 
-        # Case B: "만들어줘", "그려줘"가 없는 경우 -> 오직 등록된 프리셋('최애', '저녁', '노을', '아침' 등)만 매칭하고 나머지는 전부 무시('ignore')!
+        # Case C: "만들어줘", "그려줘", "찾아줘"가 없는 경우 -> 오직 등록된 프리셋('최애', '저녁', '노을', '아침' 등)만 매칭하고 나머지는 전부 무시('ignore')!
         custom_presets = [
             (k, p) for k, p in presets.items() if k not in DEFAULT_SCENE_PRESETS
         ]
@@ -1172,8 +1197,8 @@ class VirtualLandscapeManager:
     # -------------------------------------------------------------------------
     def build_comfy_prompts(self, location: str, weather: str, time_of_day: str) -> Tuple[str, str]:
         """
-        가장 중요한 '창문에서 바라보는 풍경(View looking out through a large panoramic window)' 구도와
-        8K UHD 초고해상도 광학 디테일이 최우선으로 반영되도록 긍정/부정 프롬프트를 조립합니다.
+        불필요한 실내 창틀 없이 '최대한 현실적인 순수 8K UHD 실사 배경(Hyper-realistic pure landscape)'이
+        화면을 가득 채우도록 긍정/부정 프롬프트를 조립합니다.
         """
         cfg = self.comfy_config
         loc_part = location.strip() or "majestic mountain range and tranquil mirror lake vista"
@@ -1186,16 +1211,15 @@ class VirtualLandscapeManager:
             else ""
         )
 
-        # 핵심: '창문 너머로 바라보는 풍경' 시점 + 피사체 묘사 + 사용자 긍정 프롬프트 결합
-        window_scene_core = (
-            f"{trigger_part}A breathtaking realistic view looking out through a large modern panoramic window, "
-            f"seen from inside looking outside at {loc_part}, "
+        # 핵심: 100% 현실적인 순수 배경(Full-bleed real-world landscape vista) + 피사체 묘사 + 사용자 긍정 프롬프트
+        realistic_scene_core = (
+            f"{trigger_part}A breathtaking hyper-realistic real-world wide-angle photograph of {loc_part}, "
             f"featuring {wea_part} during {time_part}, "
-            f"subtle clean architectural window frame at the very edges, crystal-clear glass with unobstructed expansive outdoor horizon, "
-            f"realistic window depth and perspective"
+            f"pure unobstructed full-screen outdoor vista, edge-to-edge natural scenery with no borders or frames, "
+            f"true-to-life colors, realistic atmospheric perspective and depth of field"
         )
         user_pos = cfg.positive_prompt.strip()
-        full_positive = f"{window_scene_core}, {user_pos}" if user_pos else window_scene_core
+        full_positive = f"{realistic_scene_core}, {user_pos}" if user_pos else realistic_scene_core
         full_negative = cfg.negative_prompt.strip() or DEFAULT_NEGATIVE_PROMPT
         return full_positive, full_negative
 
@@ -1453,18 +1477,18 @@ class VirtualLandscapeManager:
     def _build_clean_conditioning_from_negative(positive_prompt: str, negative_prompt: str) -> str:
         """
         T5 임베딩 분포(Manifold)를 훼손하지 않으면서 부정 프롬프트(Negative Prompt)에 적힌
-        원치 않는 요소들을 완벽히 배제하는 광학/구도 제약 문장으로 변환하여 결합합니다.
+        원치 않는 요소들을 완벽히 배제하는 순수 실사 광학/구도 제약 문장으로 변환하여 결합합니다.
         """
         neg_lower = negative_prompt.lower()
         anti_clauses: List[str] = [
-            "unobstructed crystal-clear window view",
-            "pure natural outdoor scenery without any people or text",
-            "ultra-crisp 8k optical clarity with zero blur",
+            "unobstructed full-bleed real-world outdoor vista with zero borders",
+            "pure realistic natural scenery without any people or text",
+            "ultra-crisp 8k DSLR optical clarity with zero blur",
         ]
-        if "curtain" in neg_lower or "blind" in neg_lower:
-            anti_clauses.append("wide open frameless glass with no curtains or blinds")
+        if "frame" in neg_lower or "curtain" in neg_lower or "blind" in neg_lower:
+            anti_clauses.append("completely frameless edge-to-edge outdoor horizon")
         if "cartoon" in neg_lower or "anime" in neg_lower or "painting" in neg_lower:
-            anti_clauses.append("100% real-world DSLR raw photograph, not an illustration")
+            anti_clauses.append("100% real-world raw photograph, not an illustration")
         return f"{positive_prompt}, {', '.join(anti_clauses)}"
 
     def _run_comfyui_nodes_sync(
