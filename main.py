@@ -2057,14 +2057,14 @@ def render_settings_controls(oob: bool = False) -> FT:
             Div(
                 Span("5. 구글 이미지 검색 & 웹 배경 찾기"),
                 Span(
-                    "SerpApi 구글 연동" if web_search_mgr.config.serpapi_key
+                    "🟢 Searlo 공식 API 연동 중" if web_search_mgr.config.searlo_key
                     else ("구글 API 연동" if (web_search_mgr.config.api_key and web_search_mgr.config.cx) else "스마트 웹 폴백"),
                     cls="card-status-pill",
                 ),
                 cls="option-card-title",
             ),
             P(
-                "\"~ 찾아줘\"라고 말씀하시면(예: '도쿄 야경 찾아줘', '스위스 알프스 찾아줘') 구글/SerpApi 및 웹에서 고화질 16:9 와이드 배경 사진만 선별하여 창문 화면에 맞춰 즉시 적용합니다.",
+                "\"~ 찾아줘\"라고 말씀하시면(예: '도쿄 야경 찾아줘', '스위스 알프스 찾아줘') Searlo 공식 초고속 구글 이미지 엔진(1순위) 및 웹에서 고화질 16:9 와이드 배경 사진만 선별하여 창문 화면에 맞춰 즉시 적용합니다.",
                 cls="option-card-desc",
             ),
             Form(
@@ -2084,16 +2084,26 @@ def render_settings_controls(oob: bool = False) -> FT:
                 cls="control-group",
             ),
             Details(
-                Summary("🔑 구글 서치 API (SerpApi & Google Custom Search) 설정 (클릭하여 열기)"),
+                Summary("🔑 Searlo 공식 API & 구글 검색 API 설정 (클릭하여 열기)"),
                 Form(
                     Div(
                         Div(
-                            Span("SerpApi Key (구글 이미지 검색: https://serpapi.com/search?engine=google_images)", cls="field-label"),
+                            Span("Searlo 공식 API Key (최우선 메인 엔진: https://api.searlo.tech)", cls="field-label"),
+                            Input(
+                                type="text",
+                                name="searlo_key",
+                                value=web_search_mgr.config.searlo_key,
+                                placeholder="sk_... (Searlo API Key)",
+                            ),
+                            style="grid-column: 1 / -1;",
+                        ),
+                        Div(
+                            Span("SerpApi Key (선택: https://serpapi.com)", cls="field-label"),
                             Input(
                                 type="text",
                                 name="serpapi_key",
                                 value=web_search_mgr.config.serpapi_key,
-                                placeholder="SerpApi Secret Key (https://serpapi.com 에서 발급)",
+                                placeholder="SerpApi Secret Key",
                             ),
                             style="grid-column: 1 / -1;",
                         ),
@@ -2117,7 +2127,7 @@ def render_settings_controls(oob: bool = False) -> FT:
                         ),
                         cls="comfy-grid-2col",
                     ),
-                    Button("💾 구글 검색 API 키 저장", type="submit", cls="secondary", style="width:100%; margin-top:6px;"),
+                    Button("💾 Searlo 및 검색 API 설정 저장", type="submit", cls="secondary", style="width:100%; margin-top:6px;"),
                     hx_post="/api/web-search/config",
                     hx_target="#settings-controls",
                     hx_swap="outerHTML",
@@ -2127,7 +2137,7 @@ def render_settings_controls(oob: bool = False) -> FT:
                 style="margin-top:2px;",
             ),
             P(
-                "💡 API 키를 등록하지 않아도 Bing/Unsplash/DuckDuckGo/Wikimedia 고화질 와이드 실시간 엔진으로 바로 찾을 수 있습니다.",
+                "🚀 Searlo 공식 API (sk_aad...)가 기본 탑재되어 실시간 고화질 와이드 이미지를 가장 빠르고 정확하게 찾아옵니다.",
                 cls="option-card-desc",
                 style="color: var(--ss-blue-dark); font-weight: 600;",
             ),
@@ -2570,12 +2580,12 @@ def post_toggle_wake_word_mode():
 
 
 @rt("/api/web-search/config")
-def post_web_search_config(api_key: str = "", cx: str = "", serpapi_key: str = ""):
-    web_search_mgr.save_config(api_key=api_key, cx=cx, serpapi_key=serpapi_key)
+def post_web_search_config(api_key: str = "", cx: str = "", serpapi_key: str = "", searlo_key: str = ""):
+    web_search_mgr.save_config(api_key=api_key, cx=cx, serpapi_key=serpapi_key, searlo_key=searlo_key)
     audio_ctrl.add_log(
         "SYSTEM",
-        f"⚙️ Google/SerpApi 검색 API 설정 저장 완료 (SerpApi: {'등록됨' if serpapi_key else '미등록'} | Google Key: {'등록됨' if api_key else '미등록'})",
-        "https://serpapi.com/search?engine=google_images 연동 활성화",
+        f"⚙️ Searlo 공식 검색 API 설정 저장 완료 (Searlo: {'연동 활성' if (searlo_key or web_search_mgr.config.searlo_key) else '미등록'})",
+        "https://api.searlo.tech/api/v1/search/images 1순위 구글 이미지 실시간 수집 활성화",
     )
     return render_settings_controls()
 

@@ -32,11 +32,15 @@ from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image
 
 
+DEFAULT_SEARLO_API_KEY = "sk_aad76d78e142dd76e1d4ae88fa7a9b6cf4c589a1f504c36de1136906069d8284"
+
+
 @dataclass
 class GoogleSearchConfig:
     api_key: str = ""
     cx: str = ""  # Custom Search Engine ID
-    serpapi_key: str = ""  # SerpApi Key (https://serpapi.com/search?engine=google_images)
+    serpapi_key: str = ""  # SerpApi Key
+    searlo_key: str = DEFAULT_SEARLO_API_KEY  # Searlo 공식 API Key (https://api.searlo.tech)
 
 
 @dataclass
@@ -140,29 +144,34 @@ class WebImageSearchManager:
         api_key = os.environ.get("GOOGLE_SEARCH_API_KEY", "").strip()
         cx = os.environ.get("GOOGLE_SEARCH_CX", "").strip()
         serpapi_key = os.environ.get("SERPAPI_API_KEY", "").strip()
+        searlo_key = os.environ.get("SEARLO_API_KEY", DEFAULT_SEARLO_API_KEY).strip()
         if self.config_file.exists():
             try:
                 data = json.loads(self.config_file.read_text(encoding="utf-8"))
                 api_key = data.get("api_key", api_key).strip()
                 cx = data.get("cx", cx).strip()
                 serpapi_key = data.get("serpapi_key", serpapi_key).strip()
+                searlo_key = data.get("searlo_key", searlo_key).strip() or DEFAULT_SEARLO_API_KEY
             except Exception:
                 pass
-        return GoogleSearchConfig(api_key=api_key, cx=cx, serpapi_key=serpapi_key)
+        return GoogleSearchConfig(api_key=api_key, cx=cx, serpapi_key=serpapi_key, searlo_key=searlo_key)
 
-    def save_config(self, api_key: str = "", cx: str = "", serpapi_key: str = "") -> GoogleSearchConfig:
+    def save_config(self, api_key: str = "", cx: str = "", serpapi_key: str = "", searlo_key: str = "") -> GoogleSearchConfig:
         if api_key != "":
             self.config.api_key = api_key.strip()
         if cx != "":
             self.config.cx = cx.strip()
         if serpapi_key != "":
             self.config.serpapi_key = serpapi_key.strip()
+        if searlo_key != "":
+            self.config.searlo_key = searlo_key.strip()
         try:
             self.config_file.write_text(
                 json.dumps({
                     "api_key": self.config.api_key,
                     "cx": self.config.cx,
                     "serpapi_key": self.config.serpapi_key,
+                    "searlo_key": self.config.searlo_key,
                 }, ensure_ascii=False, indent=2),
                 encoding="utf-8",
             )
@@ -232,26 +241,36 @@ class WebImageSearchManager:
         try:
             candidates: List[ImageCandidate] = []
 
-            # 1. SerpApi Google Images API (엔드포인트: https://serpapi.com/search?engine=google_images)
-            serp_key = self.config.serpapi_key or os.environ.get("SERPAPI_API_KEY", "").strip()
-            if serp_key:
+            # 1. Searlo 공식 이미지 검색 API (엔드포인트: https://api.searlo.tech/api/v1/search/images) - 최우선 메인 엔진!
+            searlo_key = self.config.searlo_key or DEFAULT_SEARLO_API_KEY
+            if searlo_key:
                 if log_callback:
-                    log_callback("WEB", f"🔍 SerpApi Google Images API 1순위 검색 중: \"{clean_query}\"...")
+                    log_callback("WEB", f"🚀 Searlo 공식 이미지 검색 엔진 1순위 가동: \"{clean_query}\"...")
+                searlo_cands = self._search_searlo_images(clean_query, eng_query)
+                candidates.extend(searlo_cands)
+                if searlo_cands and log_callback:
+                    log_callback("WEB", f"✅ Searlo 공식 구글 이미지 엔진에서 {len(searlo_cands)}개 고화질 와이드 후보 즉시 확보")
+
+            # 2. SerpApi Google Images API (엔드포인트: https://serpapi.com/search?engine=google_images)
+            serp_key = self.config.serpapi_key or os.environ.get("SERPAPI_API_KEY", "").strip()
+            if len(candidates) < 6 and serp_key:
+                if log_callback:
+                    log_callback("WEB", f"🔍 SerpApi Google Images API 2차 검색 중: \"{clean_query}\"...")
                 serp_cands = self._search_serpapi_google_images(clean_query, eng_query)
                 candidates.extend(serp_cands)
                 if serp_cands and log_callback:
                     log_callback("WEB", f"✅ SerpApi 구글 이미지에서 {len(serp_cands)}개 고화질 와이드 후보 확보")
 
-            # 2. Google Custom Search JSON API (사용자가 API Key/CX를 설정한 경우)
+            # 3. Google Custom Search JSON API (사용자가 API Key/CX를 설정한 경우)
             if len(candidates) < 6 and self.config.api_key and self.config.cx:
                 if log_callback:
-                    log_callback("WEB", "🔍 Google Custom Search JSON API 2차 검색 중...")
+                    log_callback("WEB", "🔍 Google Custom Search JSON API 3차 검색 중...")
                 google_cands = self._search_google_api(clean_query, eng_query)
                 candidates.extend(google_cands)
                 if google_cands and log_callback:
                     log_callback("WEB", f"✅ 구글 공식 API에서 {len(google_cands)}개 고화질 후보 확보")
 
-            # 3. Bing Images 실시간 와이드 고화질 검색 (API 키 불필요, 1920x1080 이상 실사 원본)
+            # 4. Bing Images 실시간 와이드 고화질 검색 (API 키 불필요, 1920x1080 이상 실사 원본)
             if len(candidates) < 6:
                 if log_callback:
                     log_callback("WEB", f"🔎 Bing 웹 이미지 검색 엔진 가동: \"{clean_query}\"...")
@@ -260,7 +279,7 @@ class WebImageSearchManager:
                 if bing_cands and log_callback:
                     log_callback("WEB", f"✅ Bing 검색에서 {len(bing_cands)}개 고화질 와이드 후보 확보")
 
-            # 4. Unsplash 실시간 16:9 와이드 풍경 검색 (API 키 불필요)
+            # 5. Unsplash 실시간 16:9 와이드 풍경 검색 (API 키 불필요)
             if len(candidates) < 6:
                 if log_callback:
                     log_callback("WEB", f"🔎 Unsplash 4K 와이드 풍경 검색: \"{eng_query[:25]}\"...")
@@ -269,12 +288,12 @@ class WebImageSearchManager:
                 if unsplash_cands and log_callback:
                     log_callback("WEB", f"✅ Unsplash에서 {len(unsplash_cands)}개 고화질 후보 확보")
 
-            # 5. DuckDuckGo Images 실시간 검색
+            # 6. DuckDuckGo Images 실시간 검색
             if len(candidates) < 6:
                 ddg_cands = self._search_duckduckgo_images(clean_query, eng_query)
                 candidates.extend(ddg_cands)
 
-            # 6. Wikimedia Commons 고해상도 풍경 라이브러리
+            # 7. Wikimedia Commons 고해상도 풍경 라이브러리
             if len(candidates) < 6:
                 wiki_cands = self._search_wikimedia(clean_query, eng_query)
                 candidates.extend(wiki_cands)
@@ -509,6 +528,71 @@ class WebImageSearchManager:
 
         return results
 
+    def _search_searlo_images(self, query: str, eng_query: str) -> List[ImageCandidate]:
+        """
+        Searlo 공식 실시간 이미지 검색 API 호출:
+        엔드포인트: https://api.searlo.tech/api/v1/search/images
+        - 공식 API Key (sk_aad76d78e142dd76e1d4ae88fa7a9b6cf4c589a1f504c36de1136906069d8284)
+        - 라이브 고품질 구글 이미지 결과에서 16:9 와이드 풍경을 실시간 수집
+        """
+        api_key = self.config.searlo_key or DEFAULT_SEARLO_API_KEY
+        if not api_key:
+            return []
+
+        results: List[ImageCandidate] = []
+        search_terms = [
+            f"{eng_query} wallpaper 4k landscape",
+            f"{query} 풍경 고화질 배경화면",
+            f"{query} 와이드 배경화면",
+        ]
+
+        for q_term in search_terms:
+            try:
+                encoded = urllib.parse.quote(q_term)
+                url = f"https://api.searlo.tech/api/v1/search/images?q={encoded}"
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "x-api-key": api_key,
+                        "Authorization": f"Bearer {api_key}",
+                        "User-Agent": "WINDO-SmartWindow/2.0 (Searlo Official Engine)",
+                        "Accept": "application/json",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=8.0, context=self._ssl_ctx) as resp:
+                    data = json.loads(resp.read().decode("utf-8", errors="ignore"))
+
+                raw_images = data.get("images", [])
+                for item in raw_images:
+                    img_url = item.get("imageUrl") or item.get("thumbnailUrl") or item.get("url")
+                    if not img_url or not (img_url.startswith("http://") or img_url.startswith("https://")):
+                        continue
+
+                    w = int(item.get("width") or 1920)
+                    h = int(item.get("height") or 1080)
+                    title = str(item.get("title") or q_term)
+
+                    # 가로 세로 비율 검사 (창문 16:9 규격)
+                    if w and h and (w / h) < 1.15:
+                        continue
+
+                    results.append(
+                        ImageCandidate(
+                            url=img_url,
+                            width=w,
+                            height=h,
+                            title=title,
+                            source="searlo_official",
+                        )
+                    )
+
+                if len(results) >= 8:
+                    break
+            except Exception:
+                continue
+
+        return results
+
     def _search_serpapi_google_images(self, query: str, eng_query: str) -> List[ImageCandidate]:
         """
         SerpApi Google Images 검색 엔진 연동:
@@ -714,8 +798,10 @@ class WebImageSearchManager:
             if any(pos in lower_title for pos in self.POSITIVE_KEYWORDS):
                 score += 25.0
 
-            if cand.source == "serpapi_google_images":
-                score += 40.0  # 공식 구글 이미지 엔진 최우선 보너스
+            if cand.source == "searlo_official":
+                score += 50.0  # Searlo 공식 API 엔진 최우선 보너스
+            elif cand.source == "serpapi_google_images":
+                score += 40.0  # SerpApi 구글 이미지 보너스
             elif cand.source == "google_api":
                 score += 30.0
             elif cand.source == "bing_web":
