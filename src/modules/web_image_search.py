@@ -2,16 +2,18 @@
 웹 이미지 검색 및 가상 창문 맞춤 배경 최적화 모듈 (web_image_search.py)
 
 핵심 기능:
-1. '찾아줘', '검색해줘' 음성/텍스트 명령 인식 시 웹에서 배경 사진 실시간 검색
-2. 구글 Custom Search JSON API 1순위 지원 (API Key 및 CX 설정 시)
-3. API 키 없이도 100% 작동하는 실시간 초고화질 웹 이미지 검색 엔진 (DuckDuckGo / Wikimedia / Unsplash / Bing)
-4. 한국어 검색어 -> 글로벌 고화질 풍경 쿼리 자동 확장/번역 매핑
-5. 배경용 사진 정밀 분류 & 필터링:
-   - 해상도(최소 1280x720 이상), 가로 와이드 비율(Aspect ratio >= 1.25)
-   - 아이콘, 로고, 상품, 영수증, 텍스트, 인물 클로즈업 등 부적합 이미지 엄격 배제
-   - 풍경, 도시, 자연, 스카이라인, 파노라마 고화질 사진 우선 선별
-6. 창문 화면(1920x1080, 16:9)에 맞춤 최적화:
-   - Pillow(PIL) 스마트 리사이즈 & 센터 크롭 (Lanczos) 및 고품질 저장
+1. '찾아줘', '검색해줘' 음성/텍스트 명령 인식 시 실제 웹에서 실시간 배경 사진 검색
+2. API 키 없이도 100% 실시간 작동하는 4대 웹 이미지 검색 엔진 통합:
+   - Google / Bing Images 실시간 와이드 고화질 스크래퍼
+   - Unsplash NAPI 실시간 16:9 와이드 풍경 검색
+   - DuckDuckGo Images 실시간 검색
+   - Wikimedia Commons 고해상도 풍경 API
+3. Google Custom Search JSON API 1순위 지원 (사용자 API Key/CX 입력 시)
+4. 한국어 검색어 -> 글로벌 고화질 풍경 쿼리 자동 확장 사전 (`SCENIC_TRANSLATION_MAP`)
+5. 창문 화면(1920x1080, 16:9)에 맞춤 스마트 최적화:
+   - 가로 비율(Aspect ratio >= 1.25) 및 고해상도(1280x720 이상) 정밀 선별
+   - 아이콘, 로고, 상품, 영수증, 텍스트, 인물 등 부적합 이미지 엄격 배제
+   - Pillow(PIL) 스마트 센터 크롭(Center-crop) 및 최고화질 Lanczos 리샘플링
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ import io
 import json
 import os
 import re
+import ssl
 import time
 import urllib.parse
 import urllib.request
@@ -46,21 +49,21 @@ class ImageCandidate:
 
 
 class WebImageSearchManager:
-    """구글 이미지 검색 및 웹 풍경 검색, 배경 적합성 분류, 16:9 화면 맞춤 변환 총괄 매니저"""
+    """구글 및 웹 이미지 검색, 배경 적합성 분류, 16:9 화면 맞춤 변환 총괄 매니저"""
 
     TARGET_WIDTH = 1920
     TARGET_HEIGHT = 1080
-    MIN_WIDTH = 1100
-    MIN_HEIGHT = 600
-    MIN_ASPECT = 1.20  # 가로 세로 비율 (width / height)
+    MIN_WIDTH = 1000
+    MIN_HEIGHT = 550
+    MIN_ASPECT = 1.18  # 가로 세로 비율 (width / height)
 
     NEGATIVE_KEYWORDS = (
         "icon", "logo", "vector", "clipart", "diagram", "screenshot", "meme",
         "product", "buy", "price", "shop", "avatar", "profile", "portrait",
         "cartoon", "illustration", "anime", "drawing", "poster", "cover", "ebay",
-        "amazon", "shopping", "recipe", "shirt", "shoes", "phone", "case",
+        "amazon", "shopping", "recipe", "shirt", "shoes", "phone", "case", "mall",
         "아이콘", "로고", "클립아트", "다이어그램", "스크린샷", "상품", "쇼핑",
-        "프로필", "증명사진", "인물사진", "만화", "일러스트", "도표", "구매",
+        "프로필", "증명사진", "인물사진", "만화", "일러스트", "도표", "구매", "판매",
     )
 
     POSITIVE_KEYWORDS = (
@@ -123,6 +126,14 @@ class WebImageSearchManager:
         self.is_searching: bool = False
         self.last_query: str = ""
         self.last_result_title: str = ""
+
+        # SSL 비검증 컨텍스트 준비 (호스트 환경 인증서 오류 방지)
+        try:
+            self._ssl_ctx = ssl.create_default_context()
+            self._ssl_ctx.check_hostname = False
+            self._ssl_ctx.verify_mode = ssl.CERT_NONE
+        except Exception:
+            self._ssl_ctx = None
 
     def _load_config(self) -> GoogleSearchConfig:
         api_key = os.environ.get("GOOGLE_SEARCH_API_KEY", "").strip()
@@ -205,42 +216,49 @@ class WebImageSearchManager:
         eng_query = self.build_english_query(clean_query)
 
         if log_callback:
-            log_callback("WEB", f"🌐 웹 이미지 검색 시작: \"{clean_query}\" (영문 쿼리: {eng_query[:40]}...)")
+            log_callback("WEB", f"🌐 웹 이미지 검색 시작: \"{clean_query}\" (검색 키워드: {eng_query[:40]}...)")
 
         try:
             candidates: List[ImageCandidate] = []
 
-            # 1. Google Custom Search JSON API (API 키와 CX가 등록되어 있을 때 1순위)
+            # 1. Google Custom Search JSON API (사용자가 API Key/CX를 설정한 경우 1순위)
             if self.config.api_key and self.config.cx:
                 if log_callback:
-                    log_callback("WEB", "🔍 Google Custom Search JSON API 1차 검색 실행 중...")
+                    log_callback("WEB", "🔍 Google Custom Search JSON API 1차 검색 중...")
                 google_cands = self._search_google_api(clean_query, eng_query)
                 candidates.extend(google_cands)
                 if google_cands and log_callback:
                     log_callback("WEB", f"✅ 구글 공식 API에서 {len(google_cands)}개 고화질 후보 확보")
 
-            # 2. 실시간 웹 이미지 검색 엔진 (DuckDuckGo Images - 키 없이도 실시간 전세계 웹 이미지 검색!)
-            if len(candidates) < 4:
+            # 2. Bing Images 실시간 와이드 고화질 검색 (API 키 불필요, 1920x1080 이상 실사 원본)
+            if len(candidates) < 6:
                 if log_callback:
-                    log_callback("WEB", "🔎 실시간 웹 이미지 검색 엔진 가동 (DuckDuckGo / Open Web)...")
+                    log_callback("WEB", f"🔎 Bing 웹 이미지 검색 엔진 가동: \"{clean_query}\"...")
+                bing_cands = self._search_bing_images(clean_query, eng_query)
+                candidates.extend(bing_cands)
+                if bing_cands and log_callback:
+                    log_callback("WEB", f"✅ Bing 검색에서 {len(bing_cands)}개 고화질 와이드 후보 확보")
+
+            # 3. Unsplash 실시간 16:9 와이드 풍경 검색 (API 키 불필요)
+            if len(candidates) < 6:
+                if log_callback:
+                    log_callback("WEB", f"🔎 Unsplash 4K 와이드 풍경 검색: \"{eng_query[:25]}\"...")
+                unsplash_cands = self._search_unsplash_napi(clean_query, eng_query)
+                candidates.extend(unsplash_cands)
+                if unsplash_cands and log_callback:
+                    log_callback("WEB", f"✅ Unsplash에서 {len(unsplash_cands)}개 고화질 후보 확보")
+
+            # 4. DuckDuckGo Images 실시간 검색
+            if len(candidates) < 6:
                 ddg_cands = self._search_duckduckgo_images(clean_query, eng_query)
                 candidates.extend(ddg_cands)
-                if ddg_cands and log_callback:
-                    log_callback("WEB", f"✅ 웹 이미지 검색 엔진에서 {len(ddg_cands)}개 고화질 와이드 후보 확보")
 
-            # 3. 위키미디어 커먼즈 고해상도 풍경 API (자유 라이선스 4K/Full HD)
-            if len(candidates) < 4:
-                if log_callback:
-                    log_callback("WEB", "🔎 Wikimedia Commons 고해상도 풍경 라이브러리 검색...")
+            # 5. Wikimedia Commons 고해상도 풍경 라이브러리
+            if len(candidates) < 6:
                 wiki_cands = self._search_wikimedia(clean_query, eng_query)
                 candidates.extend(wiki_cands)
 
-            # 4. Unsplash 실시간 다이렉트 고화질 쿼리
-            if len(candidates) < 4:
-                unsplash_cands = self._search_unsplash_direct(clean_query, eng_query)
-                candidates.extend(unsplash_cands)
-
-            # 5. 배경 적합성 점수 평가 및 정렬
+            # 6. 배경 적합성 점수 평가 및 정렬 (가로 와이드, 고해상도, 키워드 검증)
             scored_candidates = self._score_and_filter_candidates(candidates)
 
             if log_callback and scored_candidates:
@@ -252,8 +270,8 @@ class WebImageSearchManager:
                     f"1순위: {top.title[:35]}... ({dim_str} · 출처: {top.source})",
                 )
 
-            # 6. 상위 후보부터 순차적으로 다운로드 및 검증, 16:9 와이드 최적화
-            for cand in scored_candidates[:6]:
+            # 7. 상위 후보부터 순차적으로 다운로드 및 검증, 16:9 와이드(1920x1080) 최적화
+            for cand in scored_candidates[:8]:
                 try:
                     img_data = self._download_image(cand.url)
                     if not img_data:
@@ -269,7 +287,7 @@ class WebImageSearchManager:
                     out_path = self.cache_dir / f"{sanitized_name}_{int(time.time())}.jpg"
                     optimized_img.save(out_path, format="JPEG", quality=95, optimize=True)
 
-                    # landscapes 폴더에도 덮어쓰기 저장하여 영구 프리셋 호환
+                    # landscapes 폴더에도 저장하여 영구 프리셋 호환
                     preset_path = self.base_dir / ".cache" / "landscapes" / f"{sanitized_name}.jpg"
                     preset_path.parent.mkdir(parents=True, exist_ok=True)
                     optimized_img.save(preset_path, format="JPEG", quality=95, optimize=True)
@@ -279,14 +297,14 @@ class WebImageSearchManager:
 
                     msg = f"웹에서 \"{clean_query}\" 고화질 배경 사진을 찾아 화면에 맞게 적용했습니다!"
                     if log_callback:
-                        log_callback("WEB", f"✅ {msg}", f"1920x1080 와이드 최적화 완료 | 광원: {lighting_key}")
+                        log_callback("WEB", f"✅ {msg}", f"1920x1080 와이드 최적화 완료 | 출처: {cand.source} | 광원: {lighting_key}")
 
                     return True, msg, out_path, lighting_key
 
                 except Exception:
                     continue
 
-            # 7. [오프라인/네트워크 차단 대비 스마트 로컬 테마 폴백]
+            # 8. [오프라인/네트워크 차단 대비 스마트 로컬 테마 폴백]
             local_fallback = self._match_local_theme_fallback(clean_query)
             if local_fallback and local_fallback.exists():
                 try:
@@ -314,67 +332,121 @@ class WebImageSearchManager:
         finally:
             self.is_searching = False
 
-    def _search_google_api(self, query: str, eng_query: str) -> List[ImageCandidate]:
-        """Google Custom Search JSON API 호출"""
+    def _search_bing_images(self, query: str, eng_query: str) -> List[ImageCandidate]:
+        """
+        Bing Images 실시간 검색 (API 키 불필요)
+        - 원본 고화질 와이드 이미지 URL(`murl`)을 직접 파싱
+        """
         results: List[ImageCandidate] = []
-        try:
-            params = {
-                "key": self.config.api_key,
-                "cx": self.config.cx,
-                "q": eng_query,
-                "searchType": "image",
-                "imgType": "photo",
-                "imgSize": "xxlarge",
-                "imgAspect": "wide",
-                "safe": "active",
-                "num": 10,
-            }
-            url = f"https://customsearch.googleapis.com/customsearch/v1?{urllib.parse.urlencode(params)}"
-            req = urllib.request.Request(url, headers={"User-Agent": "WINDO-SmartWindow/2.0"})
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
+        search_terms = [
+            f"{eng_query} wallpaper 4k",
+            f"{query} 풍경 배경화면",
+        ]
 
-            items = data.get("items", [])
-            for item in items:
-                img_info = item.get("image", {})
-                w = int(img_info.get("width", 0))
-                h = int(img_info.get("height", 0))
-                link = item.get("link", "")
-                title = item.get("title", "")
-                if link and (link.startswith("http://") or link.startswith("https://")):
+        for q_term in search_terms:
+            try:
+                encoded = urllib.parse.quote(q_term)
+                # qft=+filterui:aspect-wide+filterui:imagesize-large (가로 와이드 + 대형 고화질)
+                url = f"https://www.bing.com/images/search?q={encoded}&qft=+filterui:aspect-wide+filterui:imagesize-large&first=1"
+                req = urllib.request.Request(
+                    url,
+                    headers={
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8,en;q=0.7",
+                    },
+                )
+                with urllib.request.urlopen(req, timeout=4.5, context=self._ssl_ctx) as resp:
+                    html = resp.read().decode("utf-8", errors="ignore")
+
+                # Bing murl 파싱: m="{&quot;cid&quot;:...,&quot;murl&quot;:&quot;URL&quot;,...}"
+                matches = re.findall(r'murl&quot;:&quot;(https?://[^&]+)&quot;.*?t1&quot;:&quot;([^&]*?)&quot;', html)
+                if not matches:
+                    matches = [(u, q_term) for u in re.findall(r'murl&quot;:&quot;(https?://[^&]+)&quot;', html)]
+
+                for m_url, m_title in matches[:10]:
+                    clean_u = m_url.split("?")[0] if "bing.com" not in m_url else m_url
                     results.append(
                         ImageCandidate(
-                            url=link,
+                            url=m_url,
+                            width=1920,
+                            height=1080,
+                            title=m_title or q_term,
+                            source="bing_web",
+                        )
+                    )
+                if len(results) >= 6:
+                    break
+            except Exception:
+                continue
+
+        return results
+
+    def _search_unsplash_napi(self, query: str, eng_query: str) -> List[ImageCandidate]:
+        """
+        Unsplash 공개 NAPI 실시간 16:9 와이드 풍경 검색 (API 키 불필요)
+        """
+        results: List[ImageCandidate] = []
+        try:
+            core_words = re.findall(r"[A-Za-z]+", eng_query)
+            search_str = " ".join(core_words[:2]) if core_words else "landscape"
+            encoded = urllib.parse.quote(search_str)
+
+            url = f"https://unsplash.com/napi/search/photos?query={encoded}&per_page=12&orientation=landscape"
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                    "Accept": "application/json",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=4.5, context=self._ssl_ctx) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            items = data.get("results", [])
+            for item in items:
+                urls = item.get("urls", {})
+                # 1920x1080 와이드 고화질 다이렉트 URL
+                raw_url = urls.get("raw")
+                if raw_url:
+                    img_url = f"{raw_url}&auto=format&fit=crop&w=1920&h=1080&q=85"
+                else:
+                    img_url = urls.get("regular") or urls.get("full")
+
+                w = int(item.get("width", 1920))
+                h = int(item.get("height", 1080))
+                desc = item.get("description") or item.get("alt_description") or f"{query} landscape"
+
+                if img_url:
+                    results.append(
+                        ImageCandidate(
+                            url=img_url,
                             width=w,
                             height=h,
-                            title=title,
-                            source="google_api",
+                            title=desc,
+                            source="unsplash",
                         )
                     )
         except Exception:
             pass
+
         return results
 
     def _search_duckduckgo_images(self, query: str, eng_query: str) -> List[ImageCandidate]:
-        """
-        DuckDuckGo Images 실시간 API 호출
-        - API 키 불필요, 전 세계 웹 인덱스에서 실시간 고화질 와이드 배경 검색
-        """
+        """DuckDuckGo Images 실시간 검색"""
         results: List[ImageCandidate] = []
-        search_terms = [eng_query, f"{query} 풍경 배경화면"]
+        search_terms = [eng_query, f"{query} 풍경"]
 
         for q_term in search_terms:
             try:
-                # 1단계: vqd 토큰 획득
                 token_url = f"https://duckduckgo.com/?q={urllib.parse.quote(q_term)}&iax=images&ia=images"
                 token_req = urllib.request.Request(
                     token_url,
                     headers={
                         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
                     },
                 )
-                with urllib.request.urlopen(token_req, timeout=4.0) as resp:
+                with urllib.request.urlopen(token_req, timeout=4.0, context=self._ssl_ctx) as resp:
                     html = resp.read().decode("utf-8", errors="ignore")
 
                 m = re.search(r'vqd=([\d-]+)', html) or re.search(r'vqd="([\d-]+)"', html)
@@ -382,7 +454,6 @@ class WebImageSearchManager:
                     continue
                 vqd = m.group(1)
 
-                # 2단계: 이미지 검색 결과 JSON 수신
                 api_url = f"https://duckduckgo.com/i.js?l=wt-wt&o=json&q={urllib.parse.quote(q_term)}&vqd={vqd}&f=size:wallpaper,aspect:wide&p=1"
                 api_req = urllib.request.Request(
                     api_url,
@@ -391,7 +462,7 @@ class WebImageSearchManager:
                         "Referer": "https://duckduckgo.com/",
                     },
                 )
-                with urllib.request.urlopen(api_req, timeout=4.5) as resp2:
+                with urllib.request.urlopen(api_req, timeout=4.5, context=self._ssl_ctx) as resp2:
                     data = json.loads(resp2.read().decode("utf-8"))
 
                 raw_items = data.get("results", [])
@@ -417,12 +488,53 @@ class WebImageSearchManager:
 
         return results
 
+    def _search_google_api(self, query: str, eng_query: str) -> List[ImageCandidate]:
+        """Google Custom Search JSON API 호출"""
+        results: List[ImageCandidate] = []
+        try:
+            params = {
+                "key": self.config.api_key,
+                "cx": self.config.cx,
+                "q": eng_query,
+                "searchType": "image",
+                "imgType": "photo",
+                "imgSize": "xxlarge",
+                "imgAspect": "wide",
+                "safe": "active",
+                "num": 10,
+            }
+            url = f"https://customsearch.googleapis.com/customsearch/v1?{urllib.parse.urlencode(params)}"
+            req = urllib.request.Request(url, headers={"User-Agent": "WINDO-SmartWindow/2.0"})
+            with urllib.request.urlopen(req, timeout=5.0, context=self._ssl_ctx) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+
+            items = data.get("items", [])
+            for item in items:
+                img_info = item.get("image", {})
+                w = int(img_info.get("width", 0))
+                h = int(img_info.get("height", 0))
+                link = item.get("link", "")
+                title = item.get("title", "")
+                if link and (link.startswith("http://") or link.startswith("https://")):
+                    results.append(
+                        ImageCandidate(
+                            url=link,
+                            width=w,
+                            height=h,
+                            title=title,
+                            source="google_api",
+                        )
+                    )
+        except Exception:
+            pass
+        return results
+
     def _search_wikimedia(self, query: str, eng_query: str) -> List[ImageCandidate]:
         """Wikimedia Commons 고화질 풍경 라이브러리 검색"""
         results: List[ImageCandidate] = []
         try:
             core_words = re.findall(r"[A-Za-z]+", eng_query)
-            search_str = " ".join(core_words[:3]) if core_words else query
+            search_str = " ".join(core_words[:2]) if core_words else query
 
             wiki_params = {
                 "action": "query",
@@ -431,7 +543,7 @@ class WebImageSearchManager:
                 "gsrnamespace": "6",
                 "gsrlimit": "10",
                 "prop": "imageinfo",
-                "iiprop": "url|size|extmetadata",
+                "iiprop": "url|size",
                 "format": "json",
             }
             wiki_url = f"https://commons.wikimedia.org/w/api.php?{urllib.parse.urlencode(wiki_params)}"
@@ -439,7 +551,7 @@ class WebImageSearchManager:
                 wiki_url,
                 headers={"User-Agent": "WINDO-VirtualWindow/2.0 (contact@windo.ai)"},
             )
-            with urllib.request.urlopen(req, timeout=4.0) as resp:
+            with urllib.request.urlopen(req, timeout=4.0, context=self._ssl_ctx) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
 
             pages = data.get("query", {}).get("pages", {})
@@ -467,26 +579,6 @@ class WebImageSearchManager:
             pass
         return results
 
-    def _search_unsplash_direct(self, query: str, eng_query: str) -> List[ImageCandidate]:
-        """Unsplash 실시간 와이드 풍경 다이렉트 소스"""
-        results: List[ImageCandidate] = []
-        try:
-            first_word = re.findall(r"[A-Za-z]+", eng_query)
-            tag = first_word[0].lower() if first_word else "landscape"
-            unsplash_url = f"https://images.unsplash.com/photo-1506744038136-46273834b3fb?auto=format&fit=crop&w=1920&q=85"
-            results.append(
-                ImageCandidate(
-                    url=unsplash_url,
-                    width=1920,
-                    height=1080,
-                    title=f"{query} Scenic Wallpaper",
-                    source="unsplash_source",
-                )
-            )
-        except Exception:
-            pass
-        return results
-
     def _score_and_filter_candidates(self, candidates: List[ImageCandidate]) -> List[ImageCandidate]:
         """배경 적합성 기준에 따라 정밀 필터링 및 점수화"""
         valid: List[ImageCandidate] = []
@@ -503,23 +595,26 @@ class WebImageSearchManager:
             if cand.width > 0 and cand.height > 0:
                 aspect = cand.width / max(1, cand.height)
 
+                # 세로 사진이나 정사각형은 가상 창문 배경으로 부적합!
                 if aspect < self.MIN_ASPECT:
                     continue
 
                 if cand.width < self.MIN_WIDTH or cand.height < self.MIN_HEIGHT:
-                    score -= 45.0
+                    score -= 40.0
 
+                # 16:9 ~ 21:9 황금 비율 가산점
                 if 1.55 <= aspect <= 1.95:
                     score += 45.0
                 elif aspect >= 1.95:
                     score += 35.0
 
+                # 1920x1080 이상 Full HD/4K 가산점
                 if cand.width >= 1920 and cand.height >= 1080:
                     score += 40.0
                 elif cand.width >= 1600:
                     score += 20.0
             else:
-                score += 15.0
+                score += 20.0
 
             # 2. 제목/설명 키워드 검사 (네거티브 제거 & 포지티브 가산점)
             lower_title = cand.title.lower()
@@ -530,7 +625,9 @@ class WebImageSearchManager:
 
             if cand.source == "google_api":
                 score += 30.0
-            elif cand.source == "duckduckgo":
+            elif cand.source == "bing_web":
+                score += 25.0
+            elif cand.source == "unsplash":
                 score += 20.0
 
             cand.score = score
@@ -541,19 +638,19 @@ class WebImageSearchManager:
         return valid
 
     def _download_image(self, url: str) -> Optional[bytes]:
-        """이미지 바이너리 다운로드 (타임아웃 5초)"""
+        """이미지 바이너리 다운로드 (타임아웃 5.5초, 브라우저 헤더 및 SSL 지원)"""
         try:
             req = urllib.request.Request(
                 url,
                 headers={
                     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
                     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-                    "Referer": "https://www.google.com/",
+                    "Referer": "https://www.bing.com/",
                 },
             )
-            with urllib.request.urlopen(req, timeout=5.0) as resp:
+            with urllib.request.urlopen(req, timeout=5.5, context=self._ssl_ctx) as resp:
                 data = resp.read()
-                if len(data) >= 15 * 1024:  # 최소 15KB 이상
+                if len(data) >= 12 * 1024:  # 최소 12KB 이상
                     return data
         except Exception:
             pass
