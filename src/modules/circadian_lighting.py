@@ -1,18 +1,31 @@
 """
 생체 리듬 기반 자연광 제어 모듈 (src/modules/circadian_lighting.py)
 
-핵심 기능:
-1. 시간별 색온도(CCT) 수학적 계산:
-   - Python datetime으로 현재 시각을 가져와 일출(06:30) ~ 일몰(18:30) 기준
-     2700K(일몰 이후 따뜻한 빛) ~ 6500K(아침·한낮의 맑고 차가운 빛) 사이로 동기화
-   - 아크탄젠트(Arctangent)와 가우시안(Gaussian) 분포를 결합해 빛이 급격히 변하지 않고 부드럽게 전환
-2. RGB 변환 및 채도(Saturation) 필터 산출:
-   - colour-science 라이브러리(CIE 1931: CCT_to_xy -> xy_to_XYZ -> XYZ_to_sRGB)를 사용해
-     켈빈(K) 색온도를 RGB 값 및 화면 채도/밝기 CSS 필터로 변환
-3. 조명 수동 제어(Override) 상태 관리 및 확장형 구조:
-   - 평소에는 datetime 기반 자동 모드(auto_mode=True)로 동작
-   - 음성 명령에 '아침', '노을', '저녁' 등의 키워드가 감지되면 자동 모드를 일시 중지하고
-     해당 시간대의 색온도 및 채도로 즉시 강제 전환(Override)
+=============================================================================
+[생체리듬 자동 광원 (Circadian Rhythm Auto-Lighting) 기능의 정확한 정의]
+=============================================================================
+1. 학술적·기능적 정의:
+   - '생체리듬 자동 광원'이란 창문이 없는 실내(지하 공간, 반지하, 내측 사무실 등)에 머무는 사용자의
+     24시간 생체시계(Circadian Rhythm)가 교란되지 않도록, **현재 실제 시각(Real-time Clock)의 태양 고도에 맞춰
+     창문 화면 전체의 색온도(CCT, 2700K~6500K)·채도(Saturation)·밝기(Brightness)를 실시간 동기화하는 기능**입니다.
+   - 인간 망막의 내인성 광민감성 망막신경절세포(ipRGC)는 아침·한낮의 청백색 파장(5500K~6500K)을 감지하면
+     수면 호르몬인 '멜라토닌' 분비를 억제하고 각성 호르몬인 '코르티솔' 분비를 촉진해 집중력과 활력을 높입니다.
+     반대로 일몰 이후 저녁·야간의 따뜻한 호박색 파장(2700K~3300K)에서는 멜라토닌 분비를 유도해 숙면을 돕습니다.
+
+2. 코에룩스(CoeLux) 입체 광원 시스템과의 역할 구분:
+   - [생체리듬 자동 광원 (본 모듈)]: 현재 '시계 시각(Time of Day)'을 기준으로 화면 전체의 색온도(K), 채도, 밝기 톤을
+     하루 24시간 주기에 맞춰 부드럽게 변화시키는 **전역 색온도·생체시계 동기화 필터**입니다.
+   - [가상 코에룩스(CoeLux) 조명 (virtual_coelux.py)]: 현재 '배경 이미지 속 공간 구도'를 분석해 해·노을·달이 있는
+     정확한 위치(동쪽 아침 해, 천창 태양, 수평선 노을, 밤하늘 달)에 눈부신 국소 광원 코어와 방사형 빛줄기,
+     창틀 입체 음영을 배치하여 실제 창밖을 보는 듯한 **입체적 시각 착시(Optical Depth Illusion)**를 만드는 기능입니다.
+
+3. 핵심 제어 방식 (ON / OFF 토글 및 수동 제어):
+   - [ON (자동 동기화 활성)]: Python datetime으로 현재 시각을 읽어 아크탄젠트(Arctangent) + 가우시안(Gaussian)
+     수식으로 계산된 색온도·채도·밝기를 창문에 실시간 반영합니다.
+   - [OFF (자동 광원 해제)]: 사용자가 설정창 버튼이나 음성("생체리듬 꺼줘", "자동 광원 꺼줘")으로 이 기능을 끄면,
+     시간대별 색온도 오버레이와 필터 개입을 즉시 중단(채도 100%, 밝기 100%, 오버레이 0%)하여
+     원본 풍경과 코에룩스 입체 광원만 왜곡 없이 선명하게 감상할 수 있습니다.
+=============================================================================
 """
 
 from __future__ import annotations
@@ -108,6 +121,8 @@ class LightingState:
 
 
 # 기본 탑재된 조명 프리셋 (향후 새 시간대/날씨 테마를 딕셔너리에 추가하기만 하면 자동 확장됨)
+# [설계 주의] overlay_opacity가 지나치게 높으면 화면 전체에 뿌연 먼지/안개가 낀 것처럼 대비가 죽으므로,
+# 0.03 ~ 0.08 이하의 미세 색온도 틴트만 적용하고 선명도(contrast)를 유지합니다.
 DEFAULT_LIGHTING_PRESETS: Dict[str, LightingPreset] = {
     "default": LightingPreset(
         key="default",
@@ -117,7 +132,7 @@ DEFAULT_LIGHTING_PRESETS: Dict[str, LightingPreset] = {
         saturation=1.05,
         brightness=1.0,
         contrast=1.02,
-        overlay_opacity=0.10,
+        overlay_opacity=0.03,
     ),
     "morning": LightingPreset(
         key="morning",
@@ -130,7 +145,7 @@ DEFAULT_LIGHTING_PRESETS: Dict[str, LightingPreset] = {
         saturation=1.22,
         brightness=1.08,
         contrast=1.04,
-        overlay_opacity=0.14,
+        overlay_opacity=0.05,
     ),
     "sunset": LightingPreset(
         key="sunset",
@@ -144,7 +159,7 @@ DEFAULT_LIGHTING_PRESETS: Dict[str, LightingPreset] = {
         saturation=1.35,
         brightness=0.96,
         contrast=1.06,
-        overlay_opacity=0.26,
+        overlay_opacity=0.08,
     ),
     "evening": LightingPreset(
         key="evening",
@@ -154,18 +169,33 @@ DEFAULT_LIGHTING_PRESETS: Dict[str, LightingPreset] = {
             "밤", "야경", "밤하늘", "자정", "어둡게", "수면", "이브닝", "나이트", "evening", "night",
         ),
         cct_kelvin=2700,
-        saturation=0.84,
-        brightness=0.74,
+        saturation=0.88,
+        brightness=0.82,
         contrast=1.08,
-        overlay_opacity=0.30,
+        overlay_opacity=0.08,
     ),
 }
 
 
 class CircadianLightingManager:
     """
-    시간 기반 생체 리듬 색온도(CCT) 자동 연산 및 사용자 음성 수동 제어(Override) 매니저
+    [생체리듬 자동 광원 매니저 (CircadianLightingManager)]
+
+    역할 정의:
+    - 현재 시스템의 실제 시각(Real-time Clock)을 기준으로 인간의 일주기 생체시계(Circadian Rhythm)에 맞는
+      자연광 색온도(CCT: 아침·낮 6500K 각성광 ↔ 저녁·밤 2700K 이완광)와 채도·밝기를 실시간 연산합니다.
+    - 사용자는 언제든 이 기능을 켜거나(ON) 끌(OFF) 수 있습니다:
+      * ON  (auto_mode=True) : 실시간 시계에 맞춰 색온도·채도·밝기가 자동 동기화됨.
+      * OFF (auto_mode=False, is_disabled=True): 시간대별 자동 필터 개입을 완전히 끄고,
+        원본 풍경 색감(채도 100%, 밝기 100%, 오버레이 0%)을 그대로 유지함.
     """
+
+    FEATURE_TITLE: str = "생체리듬 자동 광원 (Circadian Rhythm Auto-Lighting)"
+    FEATURE_SUMMARY: str = (
+        "실제 현재 시각(06:30 일출 ~ 12:30 정오 ~ 18:30 일몰 ~ 야간)의 태양 고도 변화에 맞춰 "
+        "화면의 색온도(2700K~6500K)·채도·밝기를 자동 조절하여 실내에서도 생체시계(각성·숙면 주기)를 유지해 주는 기능입니다. "
+        "끄기(OFF)를 선택하면 시간대 자동 보정이 해제되어 원본 풍경 색감 그대로 표시됩니다."
+    )
 
     CCT_MIN: int = 2700
     CCT_MAX: int = 6500
@@ -176,8 +206,9 @@ class CircadianLightingManager:
         self._lock = threading.RLock()
         self.presets: Dict[str, LightingPreset] = dict(DEFAULT_LIGHTING_PRESETS)
 
-        # 초기 상태: 기본 대기 화면에서 시작하되 자동 생체리듬 계산 지원
+        # 초기 상태: 생체리듬 자동 광원 ON 상태로 시작하되, 버튼이나 음성으로 즉시 OFF 전환 가능
         self.auto_mode: bool = True
+        self.is_disabled: bool = False
         self.is_custom_manual: bool = False
         self.override_preset_key: Optional[str] = None
         self.override_custom_cct: Optional[int] = None
@@ -289,8 +320,15 @@ class CircadianLightingManager:
             self.set_custom_lighting(cct_kelvin=numbers[0])
             return "custom"
 
-        # 3) 자동 모드 복귀 요청 확인
-        if any(kw in text for kw in ("자동 모드", "자동모드", "현재 시간", "실시간")):
+        # 3) 생체리듬 자동 광원 ON/OFF 음성 제어 ("생체리듬 켜줘", "생체리듬 꺼줘", "자동 광원 켜줘", "자동 광원 꺼줘")
+        if any(kw in text for kw in ("생체리듬", "생체 리듬", "자동 광원", "자동광원", "자동 모드", "자동모드")):
+            if any(off_w in text for off_w in ("꺼줘", "꺼", "끄기", "오프", "off", "중지", "해제")):
+                self.disable_auto_mode()
+                return "auto_off"
+            self.enable_auto_mode()
+            return "auto"
+
+        if any(kw in text for kw in ("현재 시간", "실시간")):
             self.enable_auto_mode()
             return "auto"
 
@@ -305,6 +343,7 @@ class CircadianLightingManager:
             for key, preset in self.presets.items():
                 if any(kw in text for kw in preset.keywords):
                     self.auto_mode = False
+                    self.is_disabled = False
                     self.is_custom_manual = False
                     self.override_preset_key = key
                     self.override_custom_cct = None
@@ -347,6 +386,7 @@ class CircadianLightingManager:
             )
 
             self.auto_mode = False
+            self.is_disabled = False
             self.is_custom_manual = True
             self.override_custom_saturation = round(base_sat, 2)
             self.override_custom_brightness = round(base_bri, 2)
@@ -361,6 +401,7 @@ class CircadianLightingManager:
             if preset_key not in self.presets:
                 return False
             self.auto_mode = False
+            self.is_disabled = False
             self.is_custom_manual = False
             self.override_preset_key = preset_key
             self.override_custom_cct = None
@@ -370,9 +411,13 @@ class CircadianLightingManager:
             return True
 
     def enable_auto_mode(self) -> None:
-        """생체 리듬 자동 색온도 동기화 모드로 복귀"""
+        """
+        [생체리듬 자동 광원 켜기 (ON)]
+        현재 실제 시각(datetime.now())에 맞춰 색온도(2700K~6500K)·채도·밝기를 실시간 동기화합니다.
+        """
         with self._lock:
             self.auto_mode = True
+            self.is_disabled = False
             self.is_custom_manual = False
             self.override_preset_key = None
             self.override_custom_cct = None
@@ -380,17 +425,55 @@ class CircadianLightingManager:
             self.override_custom_brightness = None
             self.override_custom_contrast = None
 
+    def disable_auto_mode(self) -> None:
+        """
+        [생체리듬 자동 광원 끄기 (OFF)]
+        시간대별 색온도 필터 및 오버레이 개입을 완전히 중단하고,
+        배경 이미지 원본 그대로의 색감(채도 100%, 밝기 100%, 대비 100%, 오버레이 투명도 0%)으로 표시합니다.
+        """
+        with self._lock:
+            self.auto_mode = False
+            self.is_disabled = True
+            self.is_custom_manual = False
+            self.override_preset_key = None
+            self.override_custom_cct = 5800
+            self.override_custom_saturation = 1.00
+            self.override_custom_brightness = 1.00
+            self.override_custom_contrast = 1.00
+
+    def toggle_auto_mode(self) -> bool:
+        """
+        [생체리듬 자동 광원 ON/OFF 토글]
+        설정창에서 '생체리듬 자동 광원' 버튼을 클릭할 때마다 켜짐(ON)과 꺼짐(OFF) 상태를 전환합니다.
+        반환값: 전환 후 auto_mode 활성 여부 (True=ON, False=OFF)
+        """
+        with self._lock:
+            if self.auto_mode:
+                self.disable_auto_mode()
+            else:
+                self.enable_auto_mode()
+            return self.auto_mode
+
     def get_current_state(self) -> LightingState:
         """현재 창문에 적용할 색온도(K), sRGB 색상, CSS 채도/밝기 필터 상태를 반환"""
         with self._lock:
-            if self.is_custom_manual:
+            if self.is_disabled and not self.auto_mode and not self.is_custom_manual:
+                # 생체리듬 자동 광원 OFF 상태: 색온도 막(overlay)을 0.0으로 완전히 끄고 원본 선명도 100% 유지
+                cct = 5800
+                sat = 1.00
+                bri = 1.00
+                con = 1.00
+                opacity = 0.00
+                active_key = "off"
+                active_label = "생체리듬 자동 광원 OFF (원본 무보정 100%)"
+            elif self.is_custom_manual:
                 cct = self.override_custom_cct if self.override_custom_cct is not None else 5800
                 sat = self.override_custom_saturation if self.override_custom_saturation is not None else 1.10
                 bri = self.override_custom_brightness if self.override_custom_brightness is not None else 1.00
                 con = self.override_custom_contrast if self.override_custom_contrast is not None else 1.02
-                opacity = 0.16 if cct >= 4500 else 0.24
+                opacity = 0.04 if cct >= 4500 else 0.07
                 active_key = "custom"
-                active_label = f"사용자 직접 조절 ({cct}K · 채도 {int(round(sat * 100))}%)"
+                active_label = f"사용자 직접 조절 · {cct}K · 채도 {int(round(sat * 100))}%"
             elif not self.auto_mode and self.override_preset_key in self.presets:
                 preset = self.presets[self.override_preset_key]
                 cct = preset.cct_kelvin
@@ -399,13 +482,14 @@ class CircadianLightingManager:
                 con = preset.contrast
                 opacity = preset.overlay_opacity
                 active_key = preset.key
-                active_label = f"{preset.label} (프리셋 · {cct}K)"
+                active_label = f"{preset.label} · {cct}K (수동 프리셋)"
             else:
                 cct, sat, bri = self.calculate_time_based_cct()
-                con = 1.02
-                opacity = 0.16 if cct >= 4500 else 0.24
+                con = 1.03
+                # 화면이 뿌옇게 흐려지지 않도록 색온도 틴트 투명도를 0.04~0.07로 미세 적용
+                opacity = 0.04 if cct >= 4500 else 0.07
                 active_key = "auto"
-                active_label = f"생체리듬 자동 자연광 ({cct}K)"
+                active_label = f"생체리듬 자동 광원 ON ({cct}K 실시간 동기화)"
 
         r, g, b = self.cct_to_srgb(cct)
         rgb_hex = f"#{r:02x}{g:02x}{b:02x}"

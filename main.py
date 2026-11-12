@@ -15,6 +15,7 @@ AI 가상 창문 (WINDO) - FastHTML 메인 애플리케이션 (main.py)
 from __future__ import annotations
 
 import calendar
+import hashlib
 import json
 import math
 import re
@@ -30,8 +31,11 @@ from starlette.datastructures import UploadFile
 from starlette.responses import Response
 from fasthtml.common import *
 
+from src.modules.ambient_sound_manager import AmbientSoundManager
 from src.modules.audio_controller import AudioController
 from src.modules.circadian_lighting import CircadianLightingManager
+from src.modules.scene_ingredients_engine import SceneIngredientsEngine
+from src.modules.virtual_coelux import VirtualCoeLuxSystem
 from src.modules.virtual_landscape import (
     DEFAULT_SCENE_PRESETS,
     IntentInferenceEngine,
@@ -745,7 +749,92 @@ landscape_mgr = VirtualLandscapeManager(base_dir=BASE_DIR)
 hud_mgr = SmartWindowHudManager()
 calendar_mgr = SmartWindowCalendarManager(base_dir=BASE_DIR)
 web_search_mgr = WebImageSearchManager(base_dir=BASE_DIR)
+coelux_mgr = VirtualCoeLuxSystem()
+sound_mgr = AmbientSoundManager(mp3_dir=BASE_DIR / "mp3")
+ingredients_mgr = SceneIngredientsEngine(base_dir=BASE_DIR, mp3_dir=BASE_DIR / "mp3")
 _LAST_RENDERED_SCENE_VERSION: int = landscape_mgr.get_state().version
+_LAST_RENDERED_TL_SWITCH_VERSION: int = 0
+
+
+def reset_all_to_initial_defaults(clear_timelapse_files: bool = True) -> None:
+    """
+    창문 앱에 처음 들어가거나 다시 켰을 때 항상 기본 사진(default.png)과 초기 기본 설정으로 시작하도록 보장합니다:
+    1) 배경 사진: default.png ('기본 대기 화면')
+    2) 코에룩스 조명: OFF (안 켜진 상태, 밝기 100%, AI 자동 색상·위치)
+    3) 타임랩스: 기존에 돌렸던 타임랩스 완전 제거 및 대기 상태 초기화
+    4) 자연광/채도: 기본 생체리듬 자동 광원 상태
+    5) 사운드: 재생 정지 및 자동 매칭 OFF
+    6) 위젯/캘린더: 초기 숨김(OFF) 상태
+    """
+    global _LAST_RENDERED_SCENE_VERSION, _LAST_RENDERED_TL_SWITCH_VERSION, IMAGE_FIT_MODE
+    IMAGE_FIT_MODE = "fill"
+    landscape_mgr.reset_to_default()
+    lighting_mgr.enable_auto_mode()
+    coelux_mgr.reset_to_default()
+    ingredients_mgr.reset_to_default(clear_disk_cache=clear_timelapse_files)
+    sound_mgr.stop()
+    sound_mgr.auto_match_bg = False
+    hud_mgr.visible = False
+    calendar_mgr.set_visible(False)
+    _LAST_RENDERED_SCENE_VERSION = landscape_mgr.get_state().version
+    _LAST_RENDERED_TL_SWITCH_VERSION = ingredients_mgr.switch_version
+
+
+# 서버 기동 시 초기 기본 상태(default.png, 코에룩스 OFF, 타임랩스 제거) 강제 보장
+reset_all_to_initial_defaults(clear_timelapse_files=True)
+
+
+def get_active_background_path() -> Optional[Path]:
+    """현재 창문에 표시 중인 배경 이미지(기본/웹 프리셋 또는 AI 생성 캐시)의 실제 로컬 파일 경로를 반환합니다."""
+    s_state = landscape_mgr.get_state()
+    raw_url = urllib.parse.unquote(s_state.current_image_url.split("?", 1)[0]).strip()
+    for prefix, folder in (
+        ("/assets/images/presets/", landscape_mgr.presets_dir),
+        ("/presets/", landscape_mgr.presets_dir),
+        ("/cache/landscapes/", landscape_mgr.cache_dir),
+        ("/generated/", landscape_mgr.cache_dir),
+    ):
+        if raw_url.startswith(prefix):
+            fname = raw_url[len(prefix):]
+            cand = folder / fname
+            if cand.exists() and cand.is_file():
+                return cand
+
+    preset = landscape_mgr.presets.get(landscape_mgr.active_key, landscape_mgr.presets.get("default"))
+    if not preset:
+        return None
+    target_name = preset.default_filename.lower()
+    target_stem = Path(preset.default_filename).stem.lower()
+    for folder in (landscape_mgr.presets_dir, landscape_mgr.cache_dir):
+        if folder.exists():
+            for p in folder.iterdir():
+                if p.is_file() and p.suffix.lower() in landscape_mgr.SUPPORTED_EXTS:
+                    if p.name.lower() == target_name or p.stem.lower() == target_stem:
+                        return p
+    return None
+
+
+def trigger_auto_bg_sound_if_enabled() -> None:
+    """'배경 변경 시 자동 맞춤 소리(Auto-Sync)'가 켜져 있을 때 새 배경에 맞는 MP3를 자동으로 분석해 재생합니다."""
+    if not sound_mgr.auto_match_bg:
+        return
+    s_st = landscape_mgr.get_state()
+    tr = sound_mgr.match_and_play_for_background(
+        get_active_background_path(),
+        scene_hint=f"{s_st.active_title} {s_st.active_key}",
+        on_gemini_updated=lambda g_tr, g_rsn: audio_ctrl.add_log(
+            "SYSTEM",
+            f"🤖 Gemini Vision 배경 맞춤 사운드 자동 전환: [{g_tr.icon} {g_tr.title}] ({g_tr.filename})",
+            g_rsn,
+        ),
+    )
+    if tr:
+        st_info = sound_mgr.get_state()
+        audio_ctrl.add_log(
+            "SYSTEM",
+            f"🔊 배경 전환에 따른 맞춤 소리 자동 재생: [{tr.icon} {tr.title}] ({tr.filename})",
+            st_info["reason"],
+        )
 
 
 def sync_custom_scene_keywords() -> None:
@@ -845,6 +934,122 @@ def handle_voice_command(command_text: str) -> None:
         audio_ctrl.speak_ack()
         return
 
+    # [핵심 신규 기능 3] "조명 켜줘" / "조명 꺼줘" / "조명 밝기 150" / "조명 노란색" 등 음성 및 텍스트 명령 처리
+    coelux_action = coelux_mgr.apply_voice_command(text)
+    if coelux_action in ("shown", "adjusted"):
+        s_st = landscape_mgr.get_state()
+        coelux_mgr.analyze_background_file(
+            get_active_background_path(),
+            scene_hint=f"{s_st.active_title} {s_st.active_key}",
+        )
+        p_info = coelux_mgr.get_placement_state()
+        audio_ctrl.add_log(
+            "STT",
+            f"☀️ 가상 코에룩스 실내 창문 채광 {'조절 완료' if coelux_action == 'adjusted' else 'ON'} (\"{text}\") — 네, 알겠습니다.",
+            f"광원: {p_info['label_ko']} | 위치 (X:{p_info['x_pct']:.0f}%, Y:{p_info['y_pct']:.0f}%) | 밝기 {p_info['intensity_pct']}% · 색상 {p_info['active_color_hex']}",
+        )
+        audio_ctrl.speak_ack()
+        return
+    elif coelux_action == "hidden":
+        audio_ctrl.add_log(
+            "STT",
+            f"🌑 가상 코에룩스(CoeLux) 입체 채광 OFF (\"{text}\") — 네, 알겠습니다.",
+            "언제든 '조명 켜줘' 또는 '코에룩스 켜줘'라고 말씀하시면 입체 광원이 다시 켜집니다.",
+        )
+        audio_ctrl.speak_ack()
+        return
+
+    # [핵심 신규 기능 4] "~ 들려줘" (비 소리 들려줘, 도시 소리 들려줘 등) & "배경에 맞는 소리 들려줘" & "소리 꺼줘" 음성/텍스트 명령 처리
+    sound_action = sound_mgr.apply_voice_command(text)
+    if sound_action == "played":
+        st_info = sound_mgr.get_state()
+        audio_ctrl.add_log(
+            "STT",
+            f"🔊 사운드 재생 시작: [{st_info['icon']} {st_info['title']}] ({st_info['filename']}) — 네, 알겠습니다.",
+            f"볼륨 {st_info['volume_pct']}% · {st_info['reason']}",
+        )
+        audio_ctrl.speak_ack()
+        return
+    elif sound_action == "match_bg":
+        s_st = landscape_mgr.get_state()
+        matched_tr = sound_mgr.match_and_play_for_background(
+            get_active_background_path(),
+            scene_hint=f"{s_st.active_title} {s_st.active_key}",
+            on_gemini_updated=lambda g_tr, g_rsn: audio_ctrl.add_log(
+                "SYSTEM",
+                f"🤖 Gemini Vision 배경 맞춤 사운드 확정: [{g_tr.icon} {g_tr.title}] ({g_tr.filename})",
+                g_rsn,
+            ),
+        )
+        if matched_tr:
+            st_info = sound_mgr.get_state()
+            audio_ctrl.add_log(
+                "STT",
+                f"🤖 배경 맞춤 소리 재생: [{matched_tr.icon} {matched_tr.title}] ({matched_tr.filename}) — 네, 알겠습니다.",
+                f"현재 배경({s_st.active_title}) 분석 완료 · {st_info['reason']}",
+            )
+            audio_ctrl.speak_ack()
+        return
+    elif sound_action == "stopped":
+        audio_ctrl.add_log(
+            "STT",
+            f"🔇 사운드 재생 정지 (\"{text}\") — 네, 알겠습니다.",
+            "언제든 '비 소리 들려줘', '도시 소리 들려줘', '배경에 맞는 소리 들려줘'라고 말씀하시면 다시 재생됩니다.",
+        )
+        audio_ctrl.speak_ack()
+        return
+    elif sound_action == "volume":
+        st_info = sound_mgr.get_state()
+        audio_ctrl.add_log(
+            "STT",
+            f"🔉 사운드 볼륨 조절 완료: {st_info['volume_pct']}% — 네, 알겠습니다.",
+            f"현재 트랙: {st_info['title']}",
+        )
+        audio_ctrl.speak_ack()
+        return
+
+    # [핵심 신규 기능 5] "타임랩스 만들어줘" / "타입랩스 만들어줘" / "타임랩스 켜줘" / "타임랩스 꺼줘" 음성·텍스트 명령 처리
+    # 오직 현재 창문에 띄워져 있는 사진을 기준으로 시간대(아침/노을/저녁)를 분석해 다른 시간대 이미지 2개를 포함한 총 3개의 이미지를 생성한 뒤 순환 전환합니다.
+    tl_comp = text.replace(" ", "").lower()
+    if any(k in tl_comp for k in ("타임랩스", "타입랩스", "타임렙스", "타입렙스", "timelapse", "시간대별변환")):
+        if any(off_w in tl_comp for off_w in ("꺼줘", "꺼", "끄기", "종료", "닫아", "중지", "오프", "off", "멈춰")):
+            ingredients_mgr.set_active(False)
+            audio_ctrl.add_log(
+                "STT",
+                f"🎬 타임랩스 종료 (\"{text}\") — 네, 알겠습니다.",
+                "언제든 '타임랩스 만들어줘'라고 말씀하시거나 설정창의 [타임랩스 만들기] 버튼을 누르면 현재 창문 사진을 기준으로 다시 생성됩니다.",
+            )
+            audio_ctrl.speak_ack()
+            return
+        else:
+            if ingredients_mgr.is_generating:
+                audio_ctrl.add_log(
+                    "WARN",
+                    f"⏳ 이미 타임랩스 이미지 3개를 생성 중입니다 ({ingredients_mgr.generation_progress_pct}%) — \"이미지 생성 중입니다.\"",
+                    "이미지 3개가 모두 완성되면 타임랩스가 자동으로 실행됩니다.",
+                )
+                audio_ctrl.speak_generating()
+                return
+            s_st = landscape_mgr.get_state()
+            bg_p = get_active_background_path()
+            started = ingredients_mgr.start_timelapse_generation_async(
+                image_path=bg_p,
+                title=s_st.active_title or "현재 창문 풍경",
+                active_preset_key=s_st.active_key,
+                try_gemini_api=True,
+                log_callback=audio_ctrl.add_log,
+            )
+            if not started:
+                audio_ctrl.speak_generating()
+                return
+            audio_ctrl.add_log(
+                "STT",
+                f"🎬 현재 창문 사진 [{s_st.active_title}] 기준 타임랩스 이미지 3개 생성 시작 (\"{text}\") — 네, 알겠습니다.",
+                "Step 1/3(원본 시간대 분석) ➔ Step 2/3(다음 시간대 생성) ➔ Step 3/3(다다음 시간대 생성) 완료 후 자동 실행됩니다.",
+            )
+            audio_ctrl.speak_ack()
+            return
+
     matched_light_key = lighting_mgr.apply_voice_intent(text)
     if matched_light_key == "query":
         l_state = lighting_mgr.get_current_state()
@@ -865,7 +1070,22 @@ def handle_voice_command(command_text: str) -> None:
             audio_ctrl.speak_ack()
             return
     elif matched_light_key == "auto":
-        audio_ctrl.add_log("SYSTEM", "☀️ 생체 리듬 자동 자연광 모드로 전환되었습니다.")
+        l_state = lighting_mgr.get_current_state()
+        audio_ctrl.add_log(
+            "STT",
+            f"⏱️ 생체리듬 자동 광원 ON ({l_state.cct_kelvin}K · 채도 {l_state.saturation_pct}%) — 네, 알겠습니다.",
+            lighting_mgr.FEATURE_SUMMARY,
+        )
+        audio_ctrl.speak_ack()
+        return
+    elif matched_light_key == "auto_off":
+        audio_ctrl.add_log(
+            "STT",
+            "⏱️ 생체리듬 자동 광원 OFF (원본 풍경 무보정 100% 모드) — 네, 알겠습니다.",
+            "시간대별 색온도 자동 필터가 해제되었습니다. '생체리듬 켜줘'라고 말씀하시면 다시 켜집니다.",
+        )
+        audio_ctrl.speak_ack()
+        return
 
     # 사용자가 단순히 "만들어줘", "생성된 풍경 적용해줘"라고만 한 경우
     compact_text = text.replace(" ", "")
@@ -875,6 +1095,8 @@ def handle_voice_command(command_text: str) -> None:
             return
         applied_url = landscape_mgr.apply_latest_cached_landscape(label="최근 생성된 AI 풍경")
         if applied_url:
+            ingredients_mgr.set_active(False)
+            trigger_auto_bg_sound_if_enabled()
             l_state = lighting_mgr.get_current_state()
             audio_ctrl.add_log(
                 "STT",
@@ -891,8 +1113,10 @@ def handle_voice_command(command_text: str) -> None:
     if route_type == "preset" and target_key:
         preset = landscape_mgr.switch_to_preset(target_key)
         if preset:
+            ingredients_mgr.set_active(False)
             if matched_light_key != "custom":
                 lighting_mgr.set_preset_override(preset.lighting_key)
+            trigger_auto_bg_sound_if_enabled()
             l_state = lighting_mgr.get_current_state()
             audio_ctrl.add_log(
                 "STT",
@@ -917,6 +1141,7 @@ def handle_voice_command(command_text: str) -> None:
             AudioController.register_custom_scene_keyword(registered_stem)
             if final_lighting_key and matched_light_key != "custom":
                 lighting_mgr.set_preset_override(final_lighting_key)
+            trigger_auto_bg_sound_if_enabled()
 
         scene_stem = landscape_mgr.derive_meaningful_scene_name(text, location, weather, time_of_day)
         started = landscape_mgr.trigger_generate_landscape_sync(
@@ -966,15 +1191,16 @@ def handle_voice_command(command_text: str) -> None:
                     pass
 
                 with landscape_mgr._lock:
-                    if stem not in landscape_mgr.presets:
-                        landscape_mgr.presets[stem] = landscape_mgr.build_custom_preset(stem, source_type="web")
-                    landscape_mgr.switch_to_preset(stem)
+                    landscape_mgr.record_preset_source(stem, "web")
+                    landscape_mgr.presets[stem] = landscape_mgr.build_custom_preset(stem, source_type="web")
 
                 AudioController.register_custom_scene_keyword(stem)
                 sync_custom_scene_keywords()
+                landscape_mgr.switch_to_preset(stem)
 
                 if matched_light_key != "custom":
                     lighting_mgr.set_preset_override(inferred_light)
+                trigger_auto_bg_sound_if_enabled()
 
                 l_state = lighting_mgr.get_current_state()
                 audio_ctrl.add_log(
@@ -999,11 +1225,11 @@ def handle_voice_command(command_text: str) -> None:
             daemon=True,
         ).start()
     else:
-        # [핵심 요구사항] '~ 만들어줘', '~ 그려줘', '~ 찾아줘' 또는 등록된 프리셋 이름이 아닌 일반 발화에는 반응하지 않음
+        # [핵심 요구사항] '~ 만들어줘', '~ 그려줘', '~ 찾아줘', '~ 들려줘' 또는 등록된 프리셋 이름이 아닌 일반 발화에는 반응하지 않음
         audio_ctrl.add_log(
             "SYSTEM",
             f"ℹ️ 일반 발화 무시 (화면 유지): \"{text}\"",
-            "이미지 생성은 '~ 만들어줘'/'~ 그려줘', 웹 이미지 검색은 '~ 찾아줘', 프리셋 전환은 등록된 이름('아침', '노을', '저녁', '야경', '최애' 등)에만 반응합니다.",
+            "이미지 생성은 '~ 만들어줘', 웹 이미지 검색은 '~ 찾아줘', 사운드 재생은 '~ 들려줘'/'배경에 맞는 소리 들려줘', 프리셋 전환은 등록된 이름에만 반응합니다.",
         )
 
 
@@ -1013,19 +1239,181 @@ audio_ctrl = AudioController(
 )
 sync_custom_scene_keywords()
 
+GLOBAL_UI_LOCK_SCRIPT = """
+(function(){
+    window.toggleWindoSettings = function(forceState) {
+        const bd = document.getElementById('settings-backdrop');
+        const ws = document.getElementById('windo-main-workspace');
+        const btn = document.getElementById('floating-settings-btn');
+        if (!bd) return false;
+        const isCurrentlyOpen = bd.classList.contains('open') && window.getComputedStyle(bd).display !== 'none';
+        const willOpen = (typeof forceState === 'boolean') ? forceState : !isCurrentlyOpen;
+        if (willOpen) {
+            bd.classList.add('open');
+            bd.style.setProperty('display', 'flex', 'important');
+            document.body.classList.add('settings-docked-open');
+            if (ws) ws.classList.add('settings-open');
+            if (btn) btn.classList.add('active');
+        } else {
+            bd.classList.remove('open');
+            bd.style.setProperty('display', 'none', 'important');
+            document.body.classList.remove('settings-docked-open');
+            if (ws) ws.classList.remove('settings-open');
+            if (btn) btn.classList.remove('active');
+        }
+        return willOpen;
+    };
+
+    if (!window.__windoEscKeyBound) {
+        window.__windoEscKeyBound = true;
+        document.addEventListener('keydown', function(evt) {
+            if (evt.key === 'Escape') {
+                const bd = document.getElementById('settings-backdrop');
+                if (bd && bd.classList.contains('open')) {
+                    window.toggleWindoSettings(false);
+                }
+            }
+        });
+    }
+
+    if (!window.__windoScrollLockBound) {
+        window.__windoScrollLockBound = true;
+        window.__windoSavedDrawerScrollTop = null;
+        window.__windoSavedOpenDetails = [];
+
+        function getDrawerScrollBox() {
+            return document.getElementById('settings-drawer-scroll-body') || document.querySelector('.drawer-body');
+        }
+
+        function isSettingsControlEvent(evt) {
+            const target = evt?.detail?.target || evt?.target;
+            if (!target) return false;
+            if (target.id === 'settings-controls' || target.closest?.('#settings-controls')) return true;
+            return false;
+        }
+
+        function saveDrawerState() {
+            const box = getDrawerScrollBox();
+            if (!box) return;
+            window.__windoSavedDrawerScrollTop = box.scrollTop;
+            const openIds = [];
+            box.querySelectorAll('#settings-controls details[open]').forEach(function(d, idx) {
+                openIds.push(d.id || ('idx_' + idx));
+            });
+            window.__windoSavedOpenDetails = openIds;
+        }
+
+        function restoreDrawerState() {
+            if (window.__windoSavedDrawerScrollTop === null) return;
+            const savedTop = window.__windoSavedDrawerScrollTop;
+            const openIds = window.__windoSavedOpenDetails || [];
+            const applyRestore = function() {
+                const box = getDrawerScrollBox();
+                if (!box) return;
+                if (openIds.length > 0) {
+                    box.querySelectorAll('#settings-controls details').forEach(function(d, idx) {
+                        const key = d.id || ('idx_' + idx);
+                        if (openIds.indexOf(key) !== -1) {
+                            d.setAttribute('open', '');
+                        }
+                    });
+                }
+                box.scrollTop = savedTop;
+            };
+            applyRestore();
+            requestAnimationFrame(applyRestore);
+            setTimeout(applyRestore, 16);
+        }
+
+        document.addEventListener('htmx:beforeRequest', function(evt) {
+            if (isSettingsControlEvent(evt)) {
+                saveDrawerState();
+            }
+        });
+
+        document.addEventListener('htmx:beforeSwap', function(evt) {
+            const box = getDrawerScrollBox();
+            if (box) {
+                saveDrawerState();
+            }
+        });
+
+        document.addEventListener('htmx:oobBeforeSwap', function(evt) {
+            const elt = evt?.detail?.elt;
+            if (elt && elt.id === 'settings-controls') {
+                saveDrawerState();
+            }
+        });
+
+        document.addEventListener('htmx:afterSwap', function(evt) {
+            restoreDrawerState();
+        });
+
+        document.addEventListener('htmx:oobAfterSwap', function(evt) {
+            const elt = evt?.detail?.elt;
+            if (elt && elt.id === 'settings-controls') {
+                restoreDrawerState();
+            }
+        });
+
+        document.addEventListener('htmx:afterSettle', function(evt) {
+            restoreDrawerState();
+        });
+    }
+})();
+"""
+
 app, rt = fast_app(
-    hdrs=(Link(rel="stylesheet", href="/assets/css/style.css?v=12"),),
+    hdrs=(
+        Link(rel="stylesheet", href="/assets/css/style.css?v=19"),
+        Script(GLOBAL_UI_LOCK_SCRIPT),
+    ),
 )
 
 IMAGE_FIT_MODE: str = "fill"
 
 
 # -------------------------------------------------------------------------
-# 정적 파일 라우트 (CSS 및 프리셋/캐시 생성 이미지 서빙 - 한글 파일명 완벽 지원)
+# 정적 파일 라우트 (CSS, JS, 프리셋/캐시 생성 이미지, 타임랩스 재료 및 mp3/ 사운드 파일 서빙)
 # -------------------------------------------------------------------------
 @rt("/assets/css/style.css")
 def get_css():
-    return FileResponse(CSS_PATH, media_type="text/css")
+    return FileResponse(
+        CSS_PATH,
+        media_type="text/css",
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
+
+
+@rt("/assets/js/{filename}")
+def get_js_asset(filename: str):
+    decoded_name = urllib.parse.unquote(filename)
+    file_path = BASE_DIR / "assets" / "js" / decoded_name
+    if not file_path.exists() or not file_path.is_file():
+        return Response(status_code=404)
+    return FileResponse(file_path, media_type="application/javascript")
+
+
+@rt("/cache/ingredients/{bundle_id}/{filename}")
+def get_ingredient_asset(bundle_id: str, filename: str):
+    dec_bundle = urllib.parse.unquote(bundle_id)
+    dec_name = urllib.parse.unquote(filename)
+    file_path = BASE_DIR / ".cache" / "ingredients" / dec_bundle / dec_name
+    if not file_path.exists() or not file_path.is_file():
+        return Response(status_code=404)
+    ext = file_path.suffix.lower()
+    mime_type = VirtualLandscapeManager.MIME_MAP.get(ext, "image/jpeg")
+    return FileResponse(file_path, media_type=mime_type)
+
+
+@rt("/api/timelapse/ingredients")
+def get_timelapse_ingredients_json():
+    """프론트엔드 WebGL 셰이더 및 Web Audio GainNode 크로스페이더에 현재 재료 번들 JSON을 한 번에 반환"""
+    payload = ingredients_mgr.get_runtime_state()
+    return Response(
+        json.dumps(payload, ensure_ascii=False),
+        media_type="application/json",
+    )
 
 
 @rt("/assets/images/{folder}/{filename}")
@@ -1048,6 +1436,15 @@ def get_cached_landscape(filename: str):
     ext = file_path.suffix.lower()
     mime_type = VirtualLandscapeManager.MIME_MAP.get(ext, "image/png")
     return FileResponse(file_path, media_type=mime_type)
+
+
+@rt("/mp3/{filename}")
+def get_mp3_file(filename: str):
+    decoded_name = urllib.parse.unquote(filename)
+    file_path = sound_mgr.mp3_dir / decoded_name
+    if not file_path.exists() or not file_path.is_file():
+        return Response(status_code=404)
+    return FileResponse(file_path, media_type="audio/mpeg")
 
 
 # -------------------------------------------------------------------------
@@ -1398,20 +1795,45 @@ def compute_window_sig() -> str:
         if calendar_mgr.visible
         else "0"
     )
+    active_c_hex = coelux_mgr.get_active_light_palettes()[3]
+    coelux_sig = (
+        f"{int(coelux_mgr.is_enabled)}-{coelux_mgr.last_detected_time}-"
+        f"{coelux_mgr.light_x_pct:.1f}-{coelux_mgr.light_y_pct:.1f}-"
+        f"{coelux_mgr.intensity_pct}-{active_c_hex}"
+    )
+    snd_state = sound_mgr.get_state()
+    sound_sig = (
+        f"{int(snd_state['is_playing'])}-{snd_state['filename']}-"
+        f"{snd_state['volume_pct']}-{int(snd_state['auto_match_bg'])}-{snd_state['play_version']}"
+    )
+    # 타임랩스 활성 상태(이미지 3개 완성 후)일 때 일정 시간 간격마다 다음 이미지로 전환 판정
+    ingredients_mgr.tick_and_get_current_image()
+    tl_bundle_id = ingredients_mgr.active_bundle.bundle_id if ingredients_mgr.active_bundle else "none"
+    tl_sig = (
+        f"{int(ingredients_mgr.is_generating)}-{ingredients_mgr.generation_progress_pct}-"
+        f"{ingredients_mgr.current_step_num}-{int(ingredients_mgr.is_active)}-"
+        f"{tl_bundle_id}-{ingredients_mgr.current_stage_idx}-"
+        f"{ingredients_mgr.switch_version}-{ingredients_mgr.speed_multiplier:g}"
+    )
     return (
         f"{s_state.version}-{int(s_state.is_generating)}-{s_state.generation_progress_pct}-"
         f"{l_state.active_preset_key}-{l_state.cct_kelvin}-{l_state.saturation_pct}-"
-        f"{l_state.brightness_pct}-{l_state.contrast_pct}-{IMAGE_FIT_MODE}-{hud_sig}-{cal_sig}"
+        f"{l_state.brightness_pct}-{l_state.contrast_pct}-{IMAGE_FIT_MODE}-{hud_sig}-{cal_sig}-{coelux_sig}-{sound_sig}-{tl_sig}"
     )
 
 
 def render_window_stage(oob: bool = False) -> FT:
-    global _LAST_RENDERED_SCENE_VERSION
+    global _LAST_RENDERED_SCENE_VERSION, _LAST_RENDERED_TL_SWITCH_VERSION
     l_state = lighting_mgr.get_current_state()
     s_state = landscape_mgr.get_state()
+    if coelux_mgr.is_enabled:
+        coelux_mgr.analyze_background_file(
+            get_active_background_path(),
+            scene_hint=f"{s_state.active_title} {s_state.active_key}",
+        )
     state_sig = compute_window_sig()
     img_inline_style = (
-        f"width:100vw; height:100vh; object-fit:{IMAGE_FIT_MODE}; "
+        f"width:100%; height:100%; object-fit:{IMAGE_FIT_MODE}; "
         "object-position:center center; display:block;"
     )
 
@@ -1426,6 +1848,10 @@ def render_window_stage(oob: bool = False) -> FT:
         else:
             step_label = "Step 4/4"
         loading_text = f"배경 생성 중 ({step_label})"
+    elif ingredients_mgr.is_generating:
+        tl_step = max(1, min(3, ingredients_mgr.current_step_num))
+        tl_pct = ingredients_mgr.generation_progress_pct
+        loading_text = f"타임랩스 이미지 생성 중 (Step {tl_step}/3 · {tl_pct}%)"
     elif web_search_mgr.is_searching:
         loading_text = "배경 검색 중..."
     else:
@@ -1443,18 +1869,343 @@ def render_window_stage(oob: bool = False) -> FT:
     )
 
     extra_attrs = {"hx_swap_oob": "true"} if oob else {}
-    # [핵심 보장] 실제 배경 버전(s_state.version)이 바뀐 순간에만 크로스페이드를 실행하고,
-    # 이미지 생성 중이거나 HUD('정보 보여줘') 토글/시간 갱신 시에는 현재 화면을 100% 고정하여 깜빡임을 차단합니다.
-    scene_changed = (s_state.version != _LAST_RENDERED_SCENE_VERSION) and (not s_state.is_generating)
-    _LAST_RENDERED_SCENE_VERSION = s_state.version
-    prev_img_url = s_state.previous_image_url if scene_changed else s_state.current_image_url
-    curr_layer_style = "" if scene_changed else "animation:none; opacity:1;"
+    # [핵심 보장]
+    # 1) 타임랩스가 실행 중(이미지 3개 모두 완성 후)이면, 기존 사진(1단계 원본)과 새로 생성된 다른 시간대 사진 2개(2단계, 3단계)가
+    #    설정창에서 지정한 배속 간격마다 순서대로 다음 사진으로 바뀝니다.
+    # 2) 일반 모드에서는 실제 배경 버전(s_state.version)이 바뀐 순간에만 크로스페이드를 실행합니다.
+    tl_curr_url, tl_prev_url, tl_stage_idx, tl_stage_lbl = ingredients_mgr.tick_and_get_current_image()
+    if ingredients_mgr.is_active and tl_curr_url:
+        tl_switched = (ingredients_mgr.switch_version != _LAST_RENDERED_TL_SWITCH_VERSION) and (not ingredients_mgr.is_generating)
+        _LAST_RENDERED_TL_SWITCH_VERSION = ingredients_mgr.switch_version
+        _LAST_RENDERED_SCENE_VERSION = s_state.version
+        curr_img_url = tl_curr_url
+        prev_img_url = (tl_prev_url or tl_curr_url) if tl_switched else tl_curr_url
+        curr_layer_style = "" if tl_switched else "animation:none; opacity:1;"
+        curr_layer_key = f"tl-v{ingredients_mgr.switch_version}-s{tl_stage_idx}-{IMAGE_FIT_MODE}"
+    else:
+        scene_changed = (s_state.version != _LAST_RENDERED_SCENE_VERSION) and (not s_state.is_generating) and (not ingredients_mgr.is_generating)
+        _LAST_RENDERED_SCENE_VERSION = s_state.version
+        _LAST_RENDERED_TL_SWITCH_VERSION = ingredients_mgr.switch_version
+        curr_img_url = s_state.current_image_url
+        prev_img_url = s_state.previous_image_url if scene_changed else s_state.current_image_url
+        curr_layer_style = "" if scene_changed else "animation:none; opacity:1;"
+        curr_layer_key = f"scene-v{s_state.version}-{IMAGE_FIT_MODE}"
 
     hud_el = render_smart_window_hud()
     cal_el = render_smart_window_calendar()
     # 정보 창과 캘린더를 하나의 반응형 도크에 배치 → 정보 창이 꺼지면 캘린더가 자동으로 왼쪽으로 붙고,
     # 창 크기가 작아지면 자동으로 아래로 줄바꿈/축소됩니다.
     overlay_dock = Div(hud_el, cal_el, cls="smart-overlay-dock") if (hud_el or cal_el) else ""
+
+    coelux_layers = ()
+    if coelux_mgr.is_enabled:
+        p = coelux_mgr.get_placement_state()
+        t_mode = p["time_of_day"]
+        sx = p["x_pct"]
+        sy = p["y_pct"]
+        core_rgb = p["core_rgb"]
+        corona_rgb = p["corona_rgb"]
+        ray_rgb = p["ray_rgb"]
+        scale = p["intensity_scale"]
+        active_hex = p["active_color_hex"]
+
+        # =====================================================================
+        # [1] 밤 / 저녁 (EVENING): 참고 이미지(구름 속 은은한 달빛) 완벽 재현
+        # - 광원 아래의 인공적인 가로 줄무늬(Water Shimmer Strips) 및 딱딱한 동그라미 테두리 완전 제거!
+        # - 구름 사이에서 부드럽게 번져 나오는 은청색·백색 달빛 코어 +
+        #   주변 구름 결을 따라 은은하게 퍼지는 다층 구름 달무리(Soft Cloud-Diffused Moonlight)만 자연스럽게 표현
+        # =====================================================================
+        if t_mode == "EVENING":
+            m_op1 = min(1.0, 0.94 * scale)
+            m_op2 = min(0.88, 0.56 * scale)
+            m_op3 = min(0.78, 0.28 * scale)
+            m_op4 = min(0.68, 0.12 * scale)
+            m_op5 = min(0.55, 0.04 * scale)
+
+            coelux_layers = (
+                # 1) 인위적인 원형 경계선 없이 구름 사이에서 부드럽게 퍼져 나오는 자연 달빛 코어 & 가우시안 달무리
+                Div(
+                    id="coelux-natural-moon",
+                    style=(
+                        "position:absolute; inset:0; pointer-events:none; z-index:4; "
+                        f"background: radial-gradient(circle at {sx}% {sy}%, "
+                        f"rgba(255,255,255,{m_op1:.2f}) 0%, "
+                        f"rgba({core_rgb},{m_op1 * 0.88:.2f}) 1.8%, "
+                        f"rgba({corona_rgb},{m_op2:.2f}) 4.8%, "
+                        f"rgba({corona_rgb},{m_op3:.2f}) 10.5%, "
+                        f"rgba({ray_rgb},{m_op4:.2f}) 20.0%, "
+                        f"rgba({ray_rgb},{m_op5:.2f}) 34.0%, "
+                        "transparent 52%); "
+                        "filter: blur(8px); mix-blend-mode: screen; transition: all 0.5s ease;"
+                    ),
+                ),
+                # 2) 주변 밤구름 결을 따라 비대칭 타원형으로 은은하게 번지는 은청색 구름 확산 달빛 (줄무늬 일절 없음!)
+                Div(
+                    id="coelux-natural-moon-cloud-bloom",
+                    style=(
+                        "position:absolute; inset:0; pointer-events:none; z-index:5; "
+                        f"background: radial-gradient(ellipse 28% 15% at {sx}% {sy}%, "
+                        f"rgba({core_rgb},{min(0.82, 0.34 * scale):.2f}) 0%, "
+                        f"rgba({corona_rgb},{min(0.72, 0.20 * scale):.2f}) 38%, "
+                        f"rgba({ray_rgb},{min(0.60, 0.08 * scale):.2f}) 70%, "
+                        "transparent 100%); "
+                        "filter: blur(18px); mix-blend-mode: screen; transition: all 0.5s ease;"
+                    ),
+                ),
+                # 3) 우측 상단 상태 배지
+                Div(
+                    Span("🌙 자연 달빛 ", style=f"font-weight:800; color:{active_hex};"),
+                    Span(
+                        f"{p['label_ko']} · 밝기 {p['intensity_pct']}% · 위치({sx:.0f}%, {sy:.0f}%)"
+                    ),
+                    style=(
+                        "position:absolute; top:18px; right:76px; z-index:35; pointer-events:none; "
+                        "padding:6px 14px; border-radius:999px; font-size:0.76rem; color:#fff; "
+                        "background:rgba(15,23,42,0.68); border:1px solid rgba(255,255,255,0.28); "
+                        "backdrop-filter:blur(10px); box-shadow:0 4px 16px rgba(0,0,0,0.28);"
+                    ),
+                ),
+            )
+
+        # =====================================================================
+        # [2] 노을 / 석양 (SUNSET): 참고 이미지(구름 사이 황금빛 석양 노을) 완벽 재현
+        # - 광원 아래의 인공적인 가로 줄무늬(Sunset Water Strips) 및 인위적인 원형 링 완전 제거!
+        # - 구름·수평선 사이에서 빛나는 따뜻한 황금-백색 태양 코어 +
+        #   주변 구름과 하늘을 가로로 부드럽게 물들이는 황금-주황 노을 대기 산란 광휘만 순수하게 표현!
+        # =====================================================================
+        elif t_mode == "SUNSET":
+            s_op1 = min(1.0, 0.98 * scale)
+            s_op2 = min(0.92, 0.64 * scale)
+            s_op3 = min(0.85, 0.35 * scale)
+            s_op4 = min(0.75, 0.16 * scale)
+            s_op5 = min(0.65, 0.06 * scale)
+
+            coelux_layers = (
+                # 1) 응집된 황금-백색 노을 태양 코어 & 부드러운 가우시안 대기 산란 (원형 테두리 링 없음!)
+                Div(
+                    id="coelux-natural-sunset-core",
+                    style=(
+                        "position:absolute; inset:0; pointer-events:none; z-index:4; "
+                        f"background: radial-gradient(circle at {sx}% {sy}%, "
+                        f"rgba(255,255,245,{s_op1:.2f}) 0%, "
+                        f"rgba({core_rgb},{s_op1 * 0.92:.2f}) 2.2%, "
+                        f"rgba({corona_rgb},{s_op2:.2f}) 6.0%, "
+                        f"rgba({corona_rgb},{s_op3:.2f}) 13.5%, "
+                        f"rgba({ray_rgb},{s_op4:.2f}) 25.0%, "
+                        f"rgba({ray_rgb},{s_op5:.2f}) 40.0%, "
+                        "transparent 60%); "
+                        "filter: blur(8px); mix-blend-mode: screen; transition: all 0.5s ease;"
+                    ),
+                ),
+                # 2) 수평선과 구름 결을 따라 가로로 넓고 부드럽게 번지는 황금-주황 노을 광휘 (줄무늬 일절 없음!)
+                Div(
+                    id="coelux-natural-sunset-horizon-glow",
+                    style=(
+                        "position:absolute; inset:0; pointer-events:none; z-index:5; "
+                        f"background: radial-gradient(ellipse 46% 18% at {sx}% {sy}%, "
+                        f"rgba({core_rgb},{min(0.88, 0.46 * scale):.2f}) 0%, "
+                        f"rgba({corona_rgb},{min(0.78, 0.28 * scale):.2f}) 38%, "
+                        f"rgba({ray_rgb},{min(0.68, 0.12 * scale):.2f}) 72%, "
+                        "transparent 100%); "
+                        "filter: blur(18px); mix-blend-mode: screen; transition: all 0.5s ease;"
+                    ),
+                ),
+                # 3) 우측 상단 상태 배지
+                Div(
+                    Span("🌇 자연 노을빛 ", style=f"font-weight:800; color:{active_hex};"),
+                    Span(
+                        f"{p['label_ko']} · 밝기 {p['intensity_pct']}% · 위치({sx:.0f}%, {sy:.0f}%)"
+                    ),
+                    style=(
+                        "position:absolute; top:18px; right:76px; z-index:35; pointer-events:none; "
+                        "padding:6px 14px; border-radius:999px; font-size:0.76rem; color:#fff; "
+                        "background:rgba(15,23,42,0.68); border:1px solid rgba(255,255,255,0.28); "
+                        "backdrop-filter:blur(10px); box-shadow:0 4px 16px rgba(0,0,0,0.28);"
+                    ),
+                ),
+            )
+
+        # =====================================================================
+        # [3] 낮 / 아침 (NOON / MORNING): 긍정 예시 4, 5번 사진 완벽 재현
+        # - 인위적인 카메라 보케 동그라미나 화면 구석을 하얗게 덮는 거대 원형 덩어리를 완전히 제거!
+        # - 눈부신 태양 코어 + 태양 중심에서 사방 구름 사이로 뻗어나가며 끝이 부드럽게 사라지는
+        #   비대칭 유기적 햇살 줄기(Organic Soft Sunbeams)만 순수하게 표현!
+        # =====================================================================
+        else:
+            d_op1 = min(1.0, 0.98 * scale)
+            d_op2 = min(0.92, 0.62 * scale)
+            d_op3 = min(0.84, 0.30 * scale)
+            d_op4 = min(0.72, 0.13 * scale)
+            d_op5 = min(0.60, 0.04 * scale)
+
+            sunbeams = p.get("sunbeams", [])
+            sunbeam_polys = "".join(
+                f'<polygon points="{bm["points"]}" fill="url(#coelux-sunbeam-fade)" '
+                f'opacity="{min(0.95, bm["opacity"] * scale):.3f}" '
+                f'filter="url(#coelux-beam-blur-{bm["blur"]})" />'
+                for bm in sunbeams
+            )
+
+            sunbeam_svg = (
+                '<svg viewBox="0 0 100 100" preserveAspectRatio="none" '
+                'style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:5; mix-blend-mode:screen;">'
+                "<defs>"
+                f'<radialGradient id="coelux-sunbeam-fade" cx="{sx}%" cy="{sy}%" r="78%" fx="{sx}%" fy="{sy}%" gradientUnits="userSpaceOnUse">'
+                f'<stop offset="0%" stop-color="rgb(255,255,255)" stop-opacity="0.96"/>'
+                f'<stop offset="12%" stop-color="rgb({core_rgb})" stop-opacity="0.72"/>'
+                f'<stop offset="34%" stop-color="rgb({corona_rgb})" stop-opacity="0.34"/>'
+                f'<stop offset="65%" stop-color="rgb({ray_rgb})" stop-opacity="0.10"/>'
+                f'<stop offset="100%" stop-color="rgb({ray_rgb})" stop-opacity="0.0"/>'
+                "</radialGradient>"
+                '<filter id="coelux-beam-blur-soft" x="-30%" y="-30%" width="160%" height="160%">'
+                '<feGaussianBlur stdDeviation="1.35" />'
+                "</filter>"
+                '<filter id="coelux-beam-blur-wide" x="-35%" y="-35%" width="170%" height="170%">'
+                '<feGaussianBlur stdDeviation="2.45" />'
+                "</filter>"
+                "</defs>"
+                f"{sunbeam_polys}"
+                "</svg>"
+            )
+
+            coelux_layers = (
+                # 1) 응집된 눈부신 태양 코어 & 경계선 없이 하늘로 스며드는 가우시안 대기 산란 코로나 (긍정 예시 4, 5번 사진)
+                Div(
+                    id="coelux-natural-sun-core",
+                    style=(
+                        "position:absolute; inset:0; pointer-events:none; z-index:4; "
+                        f"background: radial-gradient(circle at {sx}% {sy}%, "
+                        f"rgba(255,255,255,{d_op1:.2f}) 0%, "
+                        f"rgba({core_rgb},{d_op1 * 0.95:.2f}) 2.4%, "
+                        f"rgba({corona_rgb},{d_op2:.2f}) 6.2%, "
+                        f"rgba({corona_rgb},{d_op3:.2f}) 13.5%, "
+                        f"rgba({ray_rgb},{d_op4:.2f}) 25.0%, "
+                        f"rgba({ray_rgb},{d_op5:.2f}) 40.0%, "
+                        "transparent 58%); "
+                        "mix-blend-mode: screen; transition: all 0.5s ease;"
+                    ),
+                ),
+                # 2) 구름 사이로 시원하고 부드럽게 뻗어나가는 비대칭 유기적 햇살 줄기 (긍정 예시 4, 5번 사진)
+                NotStr(sunbeam_svg),
+                # 3) 우측 상단 상태 배지
+                Div(
+                    Span("☀️ 자연 햇살 ", style=f"font-weight:800; color:{active_hex};"),
+                    Span(
+                        f"{p['label_ko']} · 밝기 {p['intensity_pct']}% · 위치({sx:.0f}%, {sy:.0f}%)"
+                    ),
+                    style=(
+                        "position:absolute; top:18px; right:76px; z-index:35; pointer-events:none; "
+                        "padding:6px 14px; border-radius:999px; font-size:0.76rem; color:#fff; "
+                        "background:rgba(15,23,42,0.68); border:1px solid rgba(255,255,255,0.28); "
+                        "backdrop-filter:blur(10px); box-shadow:0 4px 16px rgba(0,0,0,0.28);"
+                    ),
+                ),
+            )
+
+    # 생체리듬 자동 광원이 OFF이거나 코에룩스가 켜진 상태에서는 배경을 흐리게 만드는 구형 앰비언트 글로우를 숨김
+    show_legacy_glow = (not coelux_mgr.is_enabled) and (l_state.active_preset_key != "off")
+
+    # 앰비언트 사운드(MP3) 브라우저 무끊김 오디오 동기화 및 상단 상태 배지
+    snd = sound_mgr.get_state()
+    tl_active = ingredients_mgr.is_active
+    snd_playing_js = "true" if snd["is_playing"] else "false"
+    snd_url_js = json.dumps(snd["url_path"])
+    snd_vol_js = f"{max(0.0, min(1.0, snd['volume_pct'] / 100.0)):.2f}"
+    sound_sync_js = f"""
+    (function(){{
+        const shouldPlay = {snd_playing_js};
+        const targetUrl = {snd_url_js};
+        const targetVol = {snd_vol_js};
+        if (!window.__windoAmbientAudio) {{
+            const a = new Audio();
+            a.loop = true;
+            a.preload = 'auto';
+            window.__windoAmbientAudio = a;
+            window.__windoAmbientCurrentUrl = '';
+        }}
+        const audio = window.__windoAmbientAudio;
+        audio.volume = targetVol;
+        if (!shouldPlay || !targetUrl) {{
+            if (!audio.paused) audio.pause();
+            window.__windoAmbientCurrentUrl = '';
+            return;
+        }}
+        if (window.__windoAmbientCurrentUrl !== targetUrl) {{
+            window.__windoAmbientCurrentUrl = targetUrl;
+            audio.src = targetUrl;
+            audio.currentTime = 0;
+        }}
+        if (audio.paused) {{
+            const p = audio.play();
+            if (p && typeof p.catch === 'function') {{
+                p.catch(function(){{
+                    if (!window.__windoAudioUnlockBound) {{
+                        window.__windoAudioUnlockBound = true;
+                        const unlock = function(){{
+                            window.__windoAudioUnlockBound = false;
+                            if (window.__windoAmbientAudio && window.__windoAmbientCurrentUrl) {{
+                                window.__windoAmbientAudio.play().catch(function(){{}});
+                            }}
+                            document.removeEventListener('click', unlock);
+                            document.removeEventListener('keydown', unlock);
+                        }};
+                        document.addEventListener('click', unlock, {{ once: true }});
+                        document.addEventListener('keydown', unlock, {{ once: true }});
+                    }}
+                }});
+            }}
+        }}
+        const gearBtn = document.getElementById('floating-settings-btn');
+        if (gearBtn && !gearBtn.__windoBound && window.toggleWindoSettings) {{
+            gearBtn.__windoBound = true;
+            gearBtn.onclick = function(e) {{
+                if (e) e.stopPropagation();
+                window.toggleWindoSettings();
+            }};
+        }}
+    }})();
+    """
+
+    top_offset = 18
+    if coelux_mgr.is_enabled:
+        top_offset += 36
+    sound_badge_top = f"{top_offset}px"
+    if snd["is_playing"]:
+        top_offset += 36
+    tl_badge_top = f"{top_offset}px"
+
+    sound_badge = (
+        Div(
+            Span(f"{snd['icon']} ", style="font-size:0.88rem;"),
+            Span(f"{snd['title']}", style="font-weight:800; color:#38bdf8; margin-right:6px;"),
+            Span(f"볼륨 {snd['volume_pct']}% · {snd['source']}"),
+            style=(
+                f"position:absolute; top:{sound_badge_top}; right:76px; z-index:35; pointer-events:none; "
+                "padding:6px 14px; border-radius:999px; font-size:0.75rem; color:#fff; "
+                "background:rgba(15,23,42,0.72); border:1px solid rgba(56,189,248,0.38); "
+                "backdrop-filter:blur(10px); box-shadow:0 4px 16px rgba(0,0,0,0.28);"
+            ),
+        )
+        if snd["is_playing"]
+        else ""
+    )
+
+    # 타임랩스 실행 중일 때(3개 이미지 모두 완성 후) 우측 상단 작은 상태 배지만 표시 (동영상 컨트롤 바 및 플로팅 버튼 제거 완료)
+    timelapse_badge = (
+        Div(
+            Span("🎬 타임랩스 ", style="font-weight:800; color:#38bdf8; margin-right:4px;"),
+            Span(f"{tl_stage_idx + 1}/3단계: {tl_stage_lbl}", style="font-weight:700; color:#fde68a; margin-right:6px;"),
+            Span(f"({ingredients_mgr.speed_multiplier:g}x · {ingredients_mgr.interval_sec:.0f}초 간격 전환)"),
+            style=(
+                f"position:absolute; top:{tl_badge_top}; right:76px; z-index:35; pointer-events:none; "
+                "padding:6px 14px; border-radius:999px; font-size:0.75rem; color:#fff; "
+                "background:rgba(15,23,42,0.74); border:1px solid rgba(56,189,248,0.42); "
+                "backdrop-filter:blur(10px); box-shadow:0 4px 16px rgba(0,0,0,0.28);"
+            ),
+        )
+        if (tl_active and tl_curr_url)
+        else ""
+    )
 
     return Div(
         Div(
@@ -1463,8 +2214,8 @@ def render_window_stage(oob: bool = False) -> FT:
                 cls="window-layer window-layer-prev",
             ),
             Div(
-                Img(src=s_state.current_image_url, cls="window-layer-img", style=img_inline_style, alt=""),
-                key=f"scene-v{s_state.version}-{IMAGE_FIT_MODE}",
+                Img(src=curr_img_url, cls="window-layer-img", style=img_inline_style, alt=""),
+                key=curr_layer_key,
                 cls="window-layer window-layer-curr",
                 style=curr_layer_style,
             ),
@@ -1476,14 +2227,22 @@ def render_window_stage(oob: bool = False) -> FT:
             Div(
                 id="window-glow-layer",
                 cls="circadian-ambient-glow",
-                style=f"background: radial-gradient(circle at 70% 25%, {l_state.rgb_hex}, transparent 65%);",
+                style=(
+                    f"background: radial-gradient(circle at 70% 25%, {l_state.rgb_hex}, transparent 65%);"
+                    if show_legacy_glow
+                    else "display:none;"
+                ),
             ),
+            *coelux_layers,
             id="window-filter-inner",
             cls="window-scene-stage",
             style=f"filter: {l_state.css_filter};",
         ),
         overlay_dock,
+        sound_badge,
+        timelapse_badge,
         loading_badge,
+        Script(sound_sync_js),
         id="window-scene-stage",
         cls="window-scene-stage",
         data_sig=state_sig,
@@ -1493,9 +2252,56 @@ def render_window_stage(oob: bool = False) -> FT:
 
 # -------------------------------------------------------------------------
 # 2. ComfyUI 실시간 노드 실행 그래프 뷰어 & 회색 톤 LOG 모니터
+#    (<details>와 로그 스크롤 컨테이너를 폴링 교체 영역 바깥에 영구 고정하여
+#     펼침 상태가 절대 닫히지 않고 마우스 휠 스크롤이 끊기지 않도록 보장)
 # -------------------------------------------------------------------------
-def render_comfy_node_graph(s_state: LandscapeState) -> FT:
-    """설정을 열면 볼 수 있는 실시간 ComfyUI 7-노드 파이프라인 실행 모니터"""
+def render_comfy_live_progress_panel(s_state: LandscapeState, oob: bool = False) -> FT:
+    """5번 ComfyUI 칸 아래에 표시되는 실시간 생성 진행률 및 단계 상태 헤더 (600ms OOB 갱신)"""
+    if s_state.is_generating:
+        gen_badge_cls = "status-badge status-transcribing"
+        gen_badge_txt = f"🔵 ComfyUI 실시간 작동 중 ({s_state.generation_progress_pct}%)"
+    elif s_state.generation_error_text:
+        gen_badge_cls = "status-badge status-error"
+        gen_badge_txt = "❌ 생성 오류 발생"
+    elif s_state.generation_progress_pct == 100:
+        gen_badge_cls = "status-badge status-listening"
+        gen_badge_txt = "✅ 생성 완료 (100%)"
+    else:
+        gen_badge_cls = "status-badge status-idle"
+        gen_badge_txt = "⚪ 생성 대기 중"
+
+    extra = {"hx_swap_oob": "true"} if oob else {}
+    return Div(
+        Div(
+            Span("⚡ ComfyUI 실시간 작동 상태", cls="comfy-live-head-title"),
+            Span(gen_badge_txt, cls=gen_badge_cls),
+            cls="gen-progress-header",
+        ),
+        Div(
+            Div(
+                cls="gen-progress-fill",
+                style=f"width: {s_state.generation_progress_pct}%;",
+            ),
+            cls="gen-progress-track",
+        ),
+        Div(
+            s_state.generation_status_text or "명령어('~ 만들어줘') 또는 위 생성 버튼을 누르면 실시간 노드 작동이 시작됩니다.",
+            cls="gen-progress-desc",
+        ),
+        Div(
+            f"⚠️ 오류 상세: {s_state.generation_error_text}",
+            cls="gen-progress-error",
+        )
+        if s_state.generation_error_text
+        else "",
+        id="comfy-live-progress-box",
+        cls="comfy-live-progress-box",
+        **extra,
+    )
+
+
+def render_comfy_nodes_flow(s_state: LandscapeState, oob: bool = False) -> FT:
+    """ComfyUI 7-노드 카드 목록 (5번 ComfyUI 칸 아래에서 실시간으로 작동 모습을 보여줌)"""
     node_cards = []
     for n in s_state.nodes:
         span_cls = "node-span-2" if n.node_id in ("3", "4", "7") else ""
@@ -1525,51 +2331,58 @@ def render_comfy_node_graph(s_state: LandscapeState) -> FT:
                 cls=f"comfy-node-card {span_cls} {state_cls}",
             )
         )
+    extra = {"hx_swap_oob": "true"} if oob else {}
+    return Div(*node_cards, id="comfy-nodes-flow-box", cls="comfy-nodes-flow", **extra)
 
-    engine_badge = (
-        "🟢 ComfyUI Node Graph Executing..."
-        if s_state.is_generating
-        else "⚪ ComfyUI Ready (1개씩 순차 생성 보장)"
-    )
 
+def render_comfy_node_graph(s_state: LandscapeState) -> FT:
+    """5번 ComfyUI 생성 칸 바로 아래에 상시 표시되는 실시간 ComfyUI 작동 모니터"""
     return Div(
+        render_comfy_live_progress_panel(s_state, oob=False),
         Div(
-            Span("🔗 ComfyUI 실시간 노드 실행 그래프 (7-Node Pipeline)"),
-            Span(engine_badge),
-            cls="comfy-canvas-header",
+            Div(
+                Span("🔗 실시간 7-노드 파이프라인 작동 모니터"),
+                Span("7-Node Live Graph", cls="comfy-sub-pill"),
+                cls="comfy-canvas-header",
+            ),
+            render_comfy_nodes_flow(s_state, oob=False),
+            Details(
+                Summary("📄 ComfyUI API Workflow JSON 보기 (클릭하여 펼치기)"),
+                Pre(s_state.workflow_json_str, id="comfy-json-pre-box", cls="comfy-json-pre"),
+                id="comfy-json-details-box",
+                cls="comfy-json-details",
+            ),
+            cls="comfy-graph-canvas",
         ),
-        Div(*node_cards, cls="comfy-nodes-flow"),
-        Details(
-            Summary("📄 ComfyUI API Workflow JSON 보기 (클릭하여 펼치기)"),
-            Pre(s_state.workflow_json_str, cls="comfy-json-pre"),
-            cls="comfy-json-details",
-        ),
-        cls="comfy-graph-canvas",
+        id="comfy-live-monitor-wrapper",
+        cls="comfy-live-monitor-wrapper",
     )
 
 
-def render_live_monitor() -> FT:
-    """설정 모달 우측의 ComfyUI 실시간 노드 그래프 + LOG 창 (600ms 자동 갱신)"""
-    logs = audio_ctrl.get_logs(limit=35)
+def compute_log_items_sig() -> str:
+    """로그 목록만의 MD5 해시: 새 로그가 추가/삭제되었을 때만 로그 리스트 내부를 갱신"""
+    logs = audio_ctrl.get_logs(limit=45)
+    raw = "|".join(f"{e.timestamp}:{e.level}:{e.message}:{e.detail}" for e in logs)
+    return hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+def compute_log_status_sig() -> str:
+    """상단 마이크/음성 상태바 + ComfyUI 실시간 작동 상태 + 로그 해시 통합 시그니처"""
     s_state = landscape_mgr.get_state()
-    state_cls = f"status-badge status-{audio_ctrl.status_state}"
+    node_sig = ",".join(f"{n.status}:{n.progress_pct}" for n in s_state.nodes)
+    raw = (
+        f"{compute_log_items_sig()}|{audio_ctrl.status_state}|{audio_ctrl.status_text}|"
+        f"{audio_ctrl.selected_device_index}|{audio_ctrl.last_raw_speech}|"
+        f"{audio_ctrl.last_recognized_command}|{int(s_state.is_generating)}|"
+        f"{s_state.generation_progress_pct}|{s_state.generation_status_text}|"
+        f"{s_state.generation_error_text}|{node_sig}"
+    )
+    return hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()[:20]
 
-    last_cmd = audio_ctrl.last_recognized_command or "\"윈도\"라고 부른 뒤 \"저녁\", \"야경\", \"겨울 풍경 만들어줘\" 등을 말씀해 보세요"
-    last_raw = audio_ctrl.last_raw_speech or "아직 감지된 음성이 없습니다."
 
-    if s_state.is_generating:
-        gen_badge_cls = "status-badge status-transcribing"
-        gen_badge_txt = f"🔵 ComfyUI 노드 실행 중 ({s_state.generation_progress_pct}%)"
-    elif s_state.generation_error_text:
-        gen_badge_cls = "status-badge status-error"
-        gen_badge_txt = "❌ 생성 오류 발생"
-    elif s_state.generation_progress_pct == 100:
-        gen_badge_cls = "status-badge status-listening"
-        gen_badge_txt = "✅ 생성 완료 (100%)"
-    else:
-        gen_badge_cls = "status-badge status-idle"
-        gen_badge_txt = "⚪ 생성 대기 중"
-
+def render_log_items_inner(oob: bool = False) -> FT:
+    """스크롤 컨테이너(#terminal-log-scroll-box) 안의 로그 행들만 렌더링 (스크롤 컨테이너 자체는 절대 파괴하지 않음)"""
+    logs = audio_ctrl.get_logs(limit=45)
     log_items = [
         Div(
             Span(entry.timestamp, cls="log-time"),
@@ -1583,6 +2396,24 @@ def render_live_monitor() -> FT:
         )
         for entry in reversed(logs)
     ]
+    extra = {"hx_swap_oob": "true"} if oob else {}
+    return Div(
+        *log_items,
+        id="terminal-log-items-inner",
+        data_logsig=compute_log_items_sig(),
+        style="display:flex; flex-direction:column; gap:6px;",
+        **extra,
+    )
+
+
+def render_live_status_poller() -> FT:
+    """600ms마다 폴링되는 상단 음성·마이크 상태 표시줄 (ComfyUI 모니터는 5번 칸 아래로 이동 완료)"""
+    status_sig = compute_log_status_sig()
+    log_items_sig = compute_log_items_sig()
+    state_cls = f"status-badge status-{audio_ctrl.status_state}"
+
+    last_cmd = audio_ctrl.last_recognized_command or "\"윈도\"라고 부른 뒤 \"저녁\", \"야경\", \"겨울 풍경 만들어줘\" 등을 말씀해 보세요"
+    last_raw = audio_ctrl.last_raw_speech or "아직 감지된 음성이 없습니다."
 
     return Div(
         Div(
@@ -1605,46 +2436,66 @@ def render_live_monitor() -> FT:
                 Strong(f"\"{last_cmd}\"", cls="highlight-cmd"),
             ),
             cls="speech-highlight-bar",
+            style="border-bottom:none;",
         ),
-        # 실시간 AI 이미지 생성 진행률(%) & ComfyUI 노드 실행 그래프
-        Div(
-            Div(
-                Span("🎨 ComfyUI 풍경 생성 상태: ", cls="highlight-label"),
-                Span(gen_badge_txt, cls=gen_badge_cls),
-                cls="gen-progress-header",
-            ),
-            Div(
-                Div(
-                    cls="gen-progress-fill",
-                    style=f"width: {s_state.generation_progress_pct}%;",
-                ),
-                cls="gen-progress-track",
-            ),
-            Div(s_state.generation_status_text, cls="gen-progress-desc"),
-            Div(
-                f"⚠️ 오류 상세: {s_state.generation_error_text}",
-                cls="gen-progress-error",
-            )
-            if s_state.generation_error_text
-            else "",
-            render_comfy_node_graph(s_state),
-            cls="gen-progress-panel",
-        ),
-        Div(*log_items, cls="terminal-body"),
-        id="live-log-container",
-        cls="live-log-container",
+        id="live-log-status-poller",
+        data_sig=status_sig,
+        data_logsig=log_items_sig,
         hx_get="/api/logs",
         hx_trigger="every 600ms",
+        hx_vals="js:{sig: document.getElementById('live-log-status-poller')?.dataset?.sig || '', logsig: document.getElementById('terminal-log-items-inner')?.dataset?.logsig || ''}",
         hx_swap="outerHTML",
     )
 
 
+def render_live_monitor() -> FT:
+    """설정창 상단 음성 & 시스템 로그 모니터 컨테이너 (ComfyUI 작동 뷰어는 5번 ComfyUI 칸 아래로 분리됨)"""
+    return Div(
+        render_live_status_poller(),
+        Div(
+            render_log_items_inner(oob=False),
+            id="terminal-log-scroll-box",
+            cls="terminal-body",
+        ),
+        id="live-log-container",
+        cls="live-log-container",
+    )
+
+
+_LAST_POLL_SETTINGS_SIG: str = ""
+
+
+def compute_settings_sig() -> str:
+    """시계(분/초) 및 ComfyUI 실시간 스텝 변화를 제외한 순수 설정창 상태 시그니처 (설정창 스크롤 및 열린 <details> 리셋 방지)"""
+    s_state = landscape_mgr.get_state()
+    l_state = lighting_mgr.get_current_state()
+    snd_state = sound_mgr.get_state()
+    active_c_hex = coelux_mgr.get_active_light_palettes()[3]
+    coelux_sig = f"{int(coelux_mgr.is_enabled)}-{coelux_mgr.last_detected_time}-{coelux_mgr.light_x_pct:.1f}-{coelux_mgr.light_y_pct:.1f}-{coelux_mgr.intensity_pct}-{active_c_hex}"
+    tl_sig = f"{int(ingredients_mgr.is_generating)}-{ingredients_mgr.generation_progress_pct}-{ingredients_mgr.current_step_num}-{int(ingredients_mgr.is_active)}-{ingredients_mgr.current_stage_idx}-{ingredients_mgr.speed_multiplier:g}"
+    hud_sec_sig = "".join("1" if v else "0" for v in hud_mgr.sections.values()) + ("1" if calendar_mgr.visible else "0")
+    raw = (
+        f"{s_state.version}|{s_state.active_key}|"
+        f"{l_state.active_preset_key}|{l_state.saturation_pct}|{l_state.brightness_pct}|{l_state.cct_kelvin}|"
+        f"{int(snd_state['is_playing'])}|{snd_state['filename']}|{snd_state['volume_pct']}|"
+        f"{coelux_sig}|{tl_sig}|{hud_sec_sig}"
+    )
+    return hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()[:16]
+
+
+
 def render_settings_controls(oob: bool = False) -> FT:
-    """설정 모달 좌측 제어 카드들 (자연광/채도 + ComfyUI 긍정/부정 프롬프트/모델/LoRA 설정 + 이름 지정 이미지 추가 + 마이크)"""
+    """설정창 1~8번 제어 카드들 (조작 시 스크롤 점프 원천 차단: show:none focus-scroll:false + Scroll Lock 연동)"""
+    global _LAST_POLL_SETTINGS_SIG
+    CTRL_SWAP = "outerHTML show:none focus-scroll:false"
     sync_custom_scene_keywords()
     l_state = lighting_mgr.get_current_state()
     s_state = landscape_mgr.get_state()
     cfg = landscape_mgr.comfy_config
+    coelux_mgr.analyze_background_file(
+        get_active_background_path(),
+        scene_hint=f"{s_state.active_title} {s_state.active_key}",
+    )
 
     preset_buttons = []
     for key, preset in landscape_mgr.presets.items():
@@ -1664,7 +2515,7 @@ def render_settings_controls(oob: bool = False) -> FT:
                 cls=f"preset-btn {'active' if is_active else ''}",
                 hx_post=f"/api/scene/preset?key={urllib.parse.quote(key)}",
                 hx_target="#settings-controls",
-                hx_swap="outerHTML",
+                hx_swap=CTRL_SWAP,
             )
         )
 
@@ -1723,14 +2574,134 @@ def render_settings_controls(oob: bool = False) -> FT:
         "document.getElementById('sat-val-disp').textContent=s+'%';"
         "document.getElementById('bri-val-disp').textContent=b+'%';"
         "document.getElementById('cct-val-disp').textContent=c+'K';"
+        "const flt=`saturate(${(s/100).toFixed(2)}) brightness(${(b/100).toFixed(2)}) contrast(1.02)`;"
         "const st=document.getElementById('window-filter-inner');"
-        "if(st){st.style.filter=`saturate(${(s/100).toFixed(2)}) brightness(${(b/100).toFixed(2)}) contrast(1.02)`;}"
+        "if(st){st.style.filter=flt;}"
+        "if(window.opener&&!window.opener.closed){"
+        "const ost=window.opener.document.getElementById('window-filter-inner');"
+        "if(ost){ost.style.filter=flt;}"
+        "}"
     )
 
     extra_attrs = {"hx_swap_oob": "true"} if oob else {}
     hud_vis, hud_time, _, hud_date_kor, _, hud_weather, iaq_state = hud_mgr.get_live_data()
     cal_vis = calendar_mgr.visible
     all_on = all(hud_mgr.sections.values()) and cal_vis
+    snd_state = sound_mgr.get_state()
+    sound_tracks = sound_mgr.list_tracks()
+    tl_rt = ingredients_mgr.get_runtime_state()
+    tl_bundle_dict = tl_rt.get("bundle", {})
+    tl_is_gen = bool(tl_rt.get("is_generating", False))
+    tl_gen_pct = int(tl_rt.get("generation_progress_pct", 0))
+    tl_gen_status = str(tl_rt.get("generation_status_text", ""))
+    tl_cur_step = int(tl_rt.get("current_step_num", 0))
+    tl_steps_list = tl_rt.get("steps", [])
+    tl_cur_stage_idx = int(tl_rt.get("current_stage_idx", 0))
+    tl_cur_speed = float(tl_rt.get("speed_multiplier", 1.0))
+    tl_cur_interval = float(tl_rt.get("interval_sec", 8.0))
+
+    tl_speed_buttons = []
+    for sp_val, sp_sec in ((1, 8), (2, 4), (5, 2), (10, 1)):
+        is_sp_active = abs(tl_cur_speed - float(sp_val)) < 0.1
+        tl_speed_buttons.append(
+            Button(
+                Span(f"⚡ {sp_val}x 배속", style="font-weight:800; display:block; font-size:0.78rem;"),
+                Span(f"{sp_sec}초마다 다음 사진", cls="preset-btn-sub"),
+                type="button",
+                cls=f"preset-btn {'active' if is_sp_active else ''}",
+                hx_post=f"/api/timelapse/speed?speed={sp_val}",
+                hx_target="#settings-controls",
+                hx_swap=CTRL_SWAP,
+            )
+        )
+
+    tl_step_cards = []
+    for st_item in tl_steps_list[:3]:
+        s_num = int(st_item.get("step_num", 1))
+        s_idx = s_num - 1
+        s_lbl = str(st_item.get("label_ko", f"{s_num}단계"))
+        s_status = str(st_item.get("status", "idle"))
+        s_pct = int(st_item.get("progress_pct", 0))
+        s_img = str(st_item.get("image_url", ""))
+        s_detail = str(st_item.get("detail_ko", ""))
+        is_curr_showing = ingredients_mgr.is_active and (not tl_is_gen) and (tl_cur_stage_idx == s_idx)
+
+        if s_status == "done":
+            st_badge_txt = "현재 창문 표시 중 ●" if is_curr_showing else "생성 완료 ✓"
+            st_badge_cls = "tl-step-badge active" if is_curr_showing else "tl-step-badge done"
+        elif s_status == "running":
+            st_badge_txt = f"생성 중 {s_pct}%"
+            st_badge_cls = "tl-step-badge running"
+        else:
+            st_badge_txt = "대기 중"
+            st_badge_cls = "tl-step-badge idle"
+
+        if s_status == "done" and s_img:
+            visual_box = Img(
+                src=s_img,
+                alt=s_lbl,
+                cls=f"tl-step-thumb {'active' if is_curr_showing else ''}",
+            )
+        elif s_status == "running":
+            visual_box = Div(
+                Div(cls="window-loading-spinner", style="width:18px; height:18px; border-width:2px; margin-bottom:4px;"),
+                Span(f"Step {s_num}/3 생성 중", style="font-size:0.68rem; font-weight:700; color:#1d4ed8;"),
+                cls="tl-step-placeholder running",
+            )
+        else:
+            visual_box = Div(
+                Span(f"Step {s_num}/3 대기", style="font-size:0.68rem; font-weight:600; color:#94a3b8;"),
+                cls="tl-step-placeholder idle",
+            )
+
+        card_attrs = {}
+        if s_status == "done" and ingredients_mgr.is_active and (not tl_is_gen):
+            card_attrs = {
+                "hx_post": f"/api/timelapse/stage?idx={s_idx}",
+                "hx_target": "#settings-controls",
+                "hx_swap": CTRL_SWAP,
+                "title": "클릭 시 이 시간대 사진을 창문에 즉시 표시합니다.",
+            }
+
+        tl_step_cards.append(
+            Div(
+                visual_box,
+                Div(
+                    Div(
+                        Span(f"Step {s_num}/3", cls="tl-step-num"),
+                        Span(st_badge_txt, cls=st_badge_cls),
+                        cls="tl-step-top-row",
+                    ),
+                    Span(f"{s_num}단계: {s_lbl}", cls="tl-step-title"),
+                    Span(s_detail, cls="tl-step-desc"),
+                    Div(
+                        Div(
+                            cls=f"tl-step-bar-fill {'done' if s_status == 'done' else ''}",
+                            style=f"width:{s_pct}%;",
+                        ),
+                        cls="tl-step-bar-track",
+                    ),
+                    cls="tl-step-info",
+                ),
+                cls=f"tl-step-row-card {'active' if is_curr_showing else ''} {'clickable' if card_attrs else ''}",
+                **card_attrs,
+            )
+        )
+
+    sound_track_buttons = []
+    for tr in sound_tracks:
+        is_tr_active = snd_state["is_playing"] and (snd_state["filename"] == tr.filename)
+        sound_track_buttons.append(
+            Button(
+                Span(f"{tr.icon} {tr.title}"),
+                Span(f"🗣️ \"{tr.title} 들려줘\"", cls="preset-btn-sub"),
+                type="button",
+                cls=f"preset-btn {'active' if is_tr_active else ''}",
+                hx_post=f"/api/sound/play?filename={urllib.parse.quote(tr.filename)}",
+                hx_target="#settings-controls",
+                hx_swap=CTRL_SWAP,
+            )
+        )
 
     def _widget_toggle(icon: str, label: str, voice: str, is_on: bool, url: str) -> FT:
         return Button(
@@ -1745,7 +2716,7 @@ def render_settings_controls(oob: bool = False) -> FT:
             cls=f"widget-toggle {'on' if is_on else ''}",
             hx_post=url,
             hx_target="#settings-controls",
-            hx_swap="outerHTML",
+            hx_swap=CTRL_SWAP,
         )
 
     def _iaq_field(label: str, unit: str, name: str, value: int, vmin: str, vmax: str) -> FT:
@@ -1766,14 +2737,18 @@ def render_settings_controls(oob: bool = False) -> FT:
             cls="secondary quick-btn",
             hx_post=f"/api/iaq/update?{query}",
             hx_target="#settings-controls",
-            hx_swap="outerHTML",
+            hx_swap=CTRL_SWAP,
         )
 
+    _LAST_POLL_SETTINGS_SIG = compute_settings_sig()
+
     return Div(
-        # 카드 1: 화면 정보 위젯 (전체 = 정보 / 상세 = 시간·날씨·공기질 / 캘린더)
+        # =====================================================================
+        # 1. 위젯 (화면 정보 위젯: 전체 = 정보 / 상세 = 시간·날씨·공기질·캘린더·코에룩스·사운드·타임랩스)
+        # =====================================================================
         Div(
             Div(
-                Span("1. 화면 정보 위젯"),
+                Span("1. 위젯 (화면 정보 표시 제어)"),
                 Span("전체 ON" if all_on else ("일부 ON" if (hud_vis or cal_vis) else "모두 OFF"), cls="card-status-pill"),
                 cls="option-card-title",
             ),
@@ -1789,7 +2764,7 @@ def render_settings_controls(oob: bool = False) -> FT:
                     cls="success",
                     hx_post="/api/widgets/all?on=1",
                     hx_target="#settings-controls",
-                    hx_swap="outerHTML",
+                    hx_swap=CTRL_SWAP,
                 ),
                 Button(
                     "전체 끄기",
@@ -1797,7 +2772,7 @@ def render_settings_controls(oob: bool = False) -> FT:
                     cls="secondary",
                     hx_post="/api/widgets/all?on=0",
                     hx_target="#settings-controls",
-                    hx_swap="outerHTML",
+                    hx_swap=CTRL_SWAP,
                 ),
                 cls="btn-row-2",
             ),
@@ -1806,71 +2781,71 @@ def render_settings_controls(oob: bool = False) -> FT:
                 _widget_toggle("🌤️", "날씨 · 기온", "날씨 / 기온 (꺼)", hud_mgr.sections["weather"], "/api/hud/section?key=weather"),
                 _widget_toggle("💨", "실내 공기질", "공기질 / 미세먼지 (꺼)", hud_mgr.sections["iaq"], "/api/hud/section?key=iaq"),
                 _widget_toggle("📅", "구글 캘린더", "캘린더 (꺼)", cal_vis, "/api/calendar/toggle"),
+                _widget_toggle("☀️", "코에룩스 조명", "조명 켜줘 / 조명 꺼줘", coelux_mgr.is_enabled, "/api/coelux/toggle"),
+                _widget_toggle("🔊", "배경 맞춤 사운드", "배경에 맞는 소리 들려줘 / 소리 꺼줘", snd_state["is_playing"], "/api/sound/toggle"),
+                _widget_toggle("🎬", "타임랩스 만들기", "타임랩스 만들어줘 / 타임랩스 꺼줘", ingredients_mgr.is_active, "/api/timelapse/toggle"),
                 cls="widget-toggle-grid",
             ),
+            id="sec-card-1",
             cls="option-card selected",
         ),
-        # 카드 2: 실내 공기질(IAQ) 임의값 입력 & AI 위험도 자동 판단
+        # =====================================================================
+        # 2. 창문풍경 & 자연광 채도 (배경 프리셋 + 코에룩스 자연 빛 + 생체리듬/채도/밝기/색온도 + 내 배경 추가·교체)
+        # =====================================================================
         Div(
             Div(
-                Span("2. 실내 공기질 입력 · AI 위험도 판단"),
-                Span(iaq_state.grade_label, cls=f"hud-iaq-badge {iaq_state.badge_cls}"),
+                Span("2. 창문풍경 & 자연광 채도"),
+                Span(
+                    f"☀️ 코에룩스 {'ON' if coelux_mgr.is_enabled else 'OFF'} · {s_state.active_title}",
+                    cls="card-status-pill",
+                ),
                 cls="option-card-title",
             ),
             Div(
-                Span("🤖 AI 판단", cls="iaq-status-head"),
-                Span(iaq_state.action_message, cls="iaq-status-msg"),
-                cls=f"iaq-status-box {'danger' if iaq_state.is_dangerous else ''}",
-            ),
-            Form(
-                Div(
-                    _iaq_field("초미세먼지 PM2.5", "㎍/㎥", "pm25", iaq_state.pm25, "0", "999"),
-                    _iaq_field("미세먼지 PM10", "㎍/㎥", "pm10", iaq_state.pm10, "0", "999"),
-                    _iaq_field("이산화탄소 CO₂", "ppm", "co2", iaq_state.co2_ppm, "300", "5000"),
-                    _iaq_field("유해가스 TVOC", "ppb", "tvoc", iaq_state.tvoc_ppb, "0", "5000"),
-                    cls="iaq-input-grid",
-                ),
-                Button("입력값 적용 & AI 판단", type="submit", cls="success", style="width:100%;"),
-                hx_post="/api/iaq/update",
-                hx_target="#settings-controls",
-                hx_swap="outerHTML",
-                cls="control-group",
-            ),
-            Div(
-                Span("빠른 테스트", cls="field-label"),
-                Div(
-                    _iaq_quick("🟢 쾌적", "pm25=11&pm10=24&co2=460&tvoc=95"),
-                    _iaq_quick("🟠 미세먼지 나쁨", "pm25=55&pm10=110&co2=650&tvoc=180"),
-                    _iaq_quick("🟡 CO₂ 높음", "pm25=14&pm10=28&co2=1350&tvoc=150"),
-                    _iaq_quick("🚨 매우 위험", "pm25=120&pm10=210&co2=1800&tvoc=650"),
-                    cls="quick-btn-grid",
-                ),
-                cls="control-group",
-                style="gap:6px;",
-            ),
-            P(
-                "기준: PM2.5 36↑ / PM10 81↑ / CO₂ 1001ppm↑ / TVOC 501ppb↑ 이면 위험으로 판단하고 공기청정기·환기를 작동시킵니다.",
-                cls="option-card-desc",
-            ),
-            cls="option-card",
-        ),
-        # 카드 3: 창문 풍경 & 채도·밝기·색온도 상태 및 직접 조절
-        Div(
-            Div(
-                Span("3. 창문 풍경 & 자연광 채도"),
                 Button(
-                    "⏱️ 생체리듬 자동 광원",
+                    f"☀️ 코에룩스 입체 광원 {'ON' if coelux_mgr.is_enabled else 'OFF'}",
+                    type="button",
+                    cls="success" if coelux_mgr.is_enabled else "secondary",
+                    hx_post="/api/coelux/toggle",
+                    hx_target="#settings-controls",
+                    hx_swap=CTRL_SWAP,
+                    title="이미지 내 광원(동쪽 아침 해·천창 태양·노을 해·밤하늘 달) 위치를 예측해 입체 광원을 배치합니다.",
+                ),
+                Button(
+                    f"⏱️ 생체리듬 자동 광원 {'ON' if l_state.auto_mode else 'OFF'}",
                     type="button",
                     cls="success" if l_state.auto_mode else "secondary",
                     hx_post="/api/lighting/auto",
                     hx_target="#settings-controls",
-                    hx_swap="outerHTML",
+                    hx_swap=CTRL_SWAP,
+                    title="클릭할 때마다 실시간 생체리듬 색온도 자동 동기화를 켜거나(ON) 끕니다(OFF).",
                 ),
-                cls="option-card-title",
+                cls="btn-row-2",
             ),
             P(
-                f"현재 풍경: {s_state.active_title} | 광원 모드: {l_state.active_label}",
+                f"현재 풍경: {s_state.active_title} | 광원 모드: {l_state.active_label}"
+                + (
+                    f" | ☀️ 코에룩스: {coelux_mgr.light_label_ko} (X:{coelux_mgr.light_x_pct:.0f}%, Y:{coelux_mgr.light_y_pct:.0f}%)"
+                    if coelux_mgr.is_enabled
+                    else ""
+                ),
                 cls="option-card-desc",
+            ),
+            Div(
+                Div(
+                    Strong("☀️ 코에룩스 자연 광원: ", style="color:#0284c7;"),
+                    Span(
+                        "인위적인 줄무늬나 원형 링 없이, 배경 이미지를 AI로 분석하여 "
+                        "☀️ 낮·아침에는 눈부신 태양 코어와 구름 사이로 퍼지는 부드러운 햇살 줄기를, "
+                        "🌇 노을에는 황금빛 석양 해와 구름 노을 번짐을, 🌙 밤에는 구름 사이로 은은하게 번지는 자연 달빛과 달무리를 배치합니다."
+                    ),
+                    style="margin-bottom:4px;",
+                ),
+                Div(
+                    Strong("⏱️ 생체리듬 자동 광원: ", style="color:#059669;"),
+                    Span(lighting_mgr.FEATURE_SUMMARY),
+                ),
+                cls="coelux-info-callout",
             ),
             Div(
                 Div(
@@ -1894,19 +2869,160 @@ def render_settings_controls(oob: bool = False) -> FT:
                 ),
                 Div(
                     Span("화면 대비", cls="metric-label"),
-                    Strong(f"{l_state.contrast_pct}%", cls="metric-value"),
+                    Strong(f"{l_state.contrast_pct}%", id="metric-contrast-disp", cls="metric-value"),
                     cls="metric-box",
                 ),
                 cls="lighting-metrics-grid",
             ),
             Div(*preset_buttons, cls="preset-btn-grid"),
+            # 코에룩스 자연 빛(햇살·노을·달빛) 밝기 · 색상 · 위치 조절 패널 (AI 자동 분석 연동)
+            Div(
+                Div(
+                    Span("☀️ 코에룩스 빛 밝기 · 색상 · 위치 조절"),
+                    Button(
+                        "🤖 AI 자동 복원",
+                        type="button",
+                        cls=f"{'success' if (coelux_mgr.auto_color and coelux_mgr.auto_position) else 'secondary'} coelux-ai-reset-btn",
+                        hx_post="/api/coelux/ai-reset",
+                        hx_target="#settings-controls",
+                        hx_swap=CTRL_SWAP,
+                    ),
+                    cls="coelux-subpanel-header",
+                ),
+                Div(
+                    Span("빠른 빛 색상 선택", cls="field-label"),
+                    Div(
+                        Button(
+                            "☀️ 황금 햇살",
+                            type="button",
+                            cls="secondary quick-btn",
+                            hx_post="/api/coelux/color?hex_code=%23ffc86e",
+                            hx_target="#settings-controls",
+                            hx_swap=CTRL_SWAP,
+                            style="border-left:4px solid #ffc86e;",
+                        ),
+                        Button(
+                            "🤍 맑은 백색광",
+                            type="button",
+                            cls="secondary quick-btn",
+                            hx_post="/api/coelux/color?hex_code=%23fffdf5",
+                            hx_target="#settings-controls",
+                            hx_swap=CTRL_SWAP,
+                            style="border-left:4px solid #cbd5e1;",
+                        ),
+                        Button(
+                            "🌇 노을 주황빛",
+                            type="button",
+                            cls="secondary quick-btn",
+                            hx_post="/api/coelux/color?hex_code=%23ff883e",
+                            hx_target="#settings-controls",
+                            hx_swap=CTRL_SWAP,
+                            style="border-left:4px solid #ff883e;",
+                        ),
+                        Button(
+                            "🌙 은청색 달빛",
+                            type="button",
+                            cls="secondary quick-btn",
+                            hx_post="/api/coelux/color?hex_code=%23a8d0ff",
+                            hx_target="#settings-controls",
+                            hx_swap=CTRL_SWAP,
+                            style="border-left:4px solid #a8d0ff;",
+                        ),
+                        cls="quick-btn-grid",
+                    ),
+                    cls="control-group",
+                    style="gap:5px;",
+                ),
+                Form(
+                    Div(
+                        Span(
+                            f"빛 밝기 ({coelux_mgr.intensity_pct}%)",
+                            id="coelux-int-disp",
+                            cls="slider-label",
+                        ),
+                        Input(
+                            type="range",
+                            name="intensity_pct",
+                            min="15",
+                            max="200",
+                            step="5",
+                            value=str(coelux_mgr.intensity_pct),
+                            oninput="document.getElementById('coelux-int-disp').textContent='빛 밝기 ('+this.value+'%)';",
+                            cls="custom-range-slider",
+                        ),
+                        cls="slider-row",
+                    ),
+                    Div(
+                        Span(
+                            f"빛 색상 ({'AI 자동: ' if coelux_mgr.auto_color else '직접 선택: '}{coelux_mgr.get_active_light_palettes()[3]})",
+                            cls="slider-label",
+                        ),
+                        Div(
+                            Input(
+                                type="color",
+                                name="color_hex",
+                                value=coelux_mgr.get_active_light_palettes()[3],
+                                cls="coelux-color-picker",
+                            ),
+                            Span(
+                                "컬러 피커로 원하는 빛 색상을 직접 고를 수 있습니다.",
+                                cls="coelux-color-hint",
+                            ),
+                            cls="coelux-color-row",
+                        ),
+                        cls="slider-row",
+                    ),
+                    Div(
+                        Span(
+                            f"빛 가로 위치 X ({coelux_mgr.light_x_pct:.0f}%)",
+                            id="coelux-x-disp",
+                            cls="slider-label",
+                        ),
+                        Input(
+                            type="range",
+                            name="x_pct",
+                            min="8",
+                            max="92",
+                            step="1",
+                            value=str(int(round(coelux_mgr.light_x_pct))),
+                            oninput="document.getElementById('coelux-x-disp').textContent='빛 가로 위치 X ('+this.value+'%)';",
+                            cls="custom-range-slider",
+                        ),
+                        cls="slider-row",
+                    ),
+                    Div(
+                        Span(
+                            f"빛 세로 위치 Y ({coelux_mgr.light_y_pct:.0f}%)",
+                            id="coelux-y-disp",
+                            cls="slider-label",
+                        ),
+                        Input(
+                            type="range",
+                            name="y_pct",
+                            min="8",
+                            max="65",
+                            step="1",
+                            value=str(int(round(coelux_mgr.light_y_pct))),
+                            oninput="document.getElementById('coelux-y-disp').textContent='빛 세로 위치 Y ('+this.value+'%)';",
+                            cls="custom-range-slider",
+                        ),
+                        cls="slider-row",
+                    ),
+                    hx_post="/api/coelux/update",
+                    hx_trigger="change",
+                    hx_target="#settings-controls",
+                    hx_swap=CTRL_SWAP,
+                    cls="slider-form-stack",
+                ),
+                cls="custom-sliders-box coelux-sliders-box",
+            ),
             Form(
                 Div(
-                    Span("🎛️ 채도 · 밝기 · 색온도 직접 조절 (슬라이더를 움직이면 즉시 반영됩니다)"),
+                    Span("🎛️ 배경 자체 채도 · 밝기 · 색온도 조절"),
                     cls="custom-slider-title",
                 ),
                 Div(
-                    Span("채도 (0~250%)", cls="slider-label"),
+                    Span(f"채도 ({l_state.saturation_pct}% · 0~250%)", cls="slider-label"),
                     Input(
                         type="range",
                         name="saturation_pct",
@@ -1920,7 +3036,7 @@ def render_settings_controls(oob: bool = False) -> FT:
                     cls="slider-row",
                 ),
                 Div(
-                    Span("밝기 (30~180%)", cls="slider-label"),
+                    Span(f"밝기 ({l_state.brightness_pct}% · 30~180%)", cls="slider-label"),
                     Input(
                         type="range",
                         name="brightness_pct",
@@ -1934,7 +3050,7 @@ def render_settings_controls(oob: bool = False) -> FT:
                     cls="slider-row",
                 ),
                 Div(
-                    Span("색온도 (2000~9000K)", cls="slider-label"),
+                    Span(f"색온도 ({l_state.cct_kelvin}K · 2000~9000K)", cls="slider-label"),
                     Input(
                         type="range",
                         name="cct_kelvin",
@@ -1950,23 +3066,226 @@ def render_settings_controls(oob: bool = False) -> FT:
                 hx_post="/api/lighting/custom",
                 hx_trigger="change",
                 hx_target="#settings-controls",
-                hx_swap="outerHTML",
+                hx_swap=CTRL_SWAP,
                 cls="custom-sliders-box",
             ),
+            # 내 사진으로 배경 이미지 추가·교체 서브 섹션
+            Details(
+                Summary("🖼️ 내 사진으로 창문 배경 이미지 추가 · 교체 ('최애.jpg' 등)"),
+                Form(
+                    P(
+                        "이름(예: 최애)을 입력하고 이미지를 추가하면 '최애.jpg'로 저장되며, 저녁·노을처럼 \"윈도 최애\"라고 부르면 바로 틀어집니다!",
+                        cls="option-card-desc",
+                        style="margin-bottom:6px;",
+                    ),
+                    Input(
+                        type="text",
+                        name="custom_name",
+                        placeholder="새로 추가할 배경 이름 입력 (예: 최애, 우리집, 바다)",
+                    ),
+                    Select(*preset_select_options, name="preset_key"),
+                    Div(
+                        Input(
+                            type="file",
+                            name="image_file",
+                            accept=".svg,.jpg,.jpeg,.png,.webp,.gif,.bmp,.avif,image/svg+xml,image/jpeg,image/png,image/*",
+                            required=True,
+                        ),
+                        Button("이름 저장 & 즉시 적용", type="submit"),
+                        cls="inline-input-row",
+                    ),
+                    hx_post="/api/scene/upload",
+                    hx_encoding="multipart/form-data",
+                    hx_target="#settings-controls",
+                    hx_swap=CTRL_SWAP,
+                    cls="control-group",
+                    style="margin-top:8px;",
+                ),
+                id="details-custom-bg-upload",
+                cls="sub-collapsible-box",
+            ),
+            id="sec-card-2",
             cls="option-card selected",
         ),
-        # 카드 2: ComfyUI 워크플로우 설정 (긍정 프롬프트 / 부정 프롬프트 / 모델 설정 / LoRA 설정 / 샘플러)
+        # =====================================================================
+        # 3. 사운드 (mp3/ 폴더 소리 들려주기 & Gemini AI 배경 맞춤 소리)
+        # =====================================================================
         Div(
             Div(
-                Span("4. ComfyUI 설정 (프롬프트 · 모델 · LoRA)"),
+                Span("3. 사운드 (mp3 소리 & AI 배경 맞춤 소리)"),
+                Span(
+                    f"재생 중: {snd_state['icon']} {snd_state['title']}" if snd_state["is_playing"] else "🔇 재생 중지됨",
+                    cls="card-status-pill",
+                ),
                 cls="option-card-title",
             ),
             P(
-                "ComfyUI 노드 그래프에 들어갈 베이스 모델, LoRA 파일/강도, 긍정(Positive) 및 부정(Negative) 프롬프트를 직접 설정합니다.",
+                "① \"비 소리 들려줘\", \"도시 소리 들려줘\"처럼 말하거나 아래 버튼을 누르면 mp3 폴더의 소리를 들려줍니다. "
+                "② \"배경에 맞는 소리 들려줘\"라고 말하거나 AI 분석 버튼을 누르면 Gemini API가 현재 배경을 분석해 알맞은 mp3를 자동 재생합니다.",
+                cls="option-card-desc",
+            ),
+            Div(
+                Div(
+                    Strong(
+                        f"{snd_state['icon']} 현재 상태: {snd_state['title']}"
+                        + (f" ({snd_state['filename']})" if snd_state["is_playing"] else ""),
+                        style="color:#0284c7; display:block; margin-bottom:4px;",
+                    ),
+                    Span(snd_state["reason"], style="font-size:0.76rem; color:#334155;"),
+                ),
+                cls="sound-status-callout",
+            ),
+            Div(
+                Button(
+                    "🤖 현재 배경에 맞는 소리 AI 분석 & 재생",
+                    type="button",
+                    cls="success",
+                    hx_post="/api/sound/match-bg",
+                    hx_target="#settings-controls",
+                    hx_swap=CTRL_SWAP,
+                    title="Gemini Vision API로 현재 창문 배경 이미지를 분석하여 가장 잘 어울리는 mp3를 즉시 틀어줍니다.",
+                ),
+                Button(
+                    f"🔄 배경 변경 시 자동 맞춤 소리: {'ON' if snd_state['auto_match_bg'] else 'OFF'}",
+                    type="button",
+                    cls="success" if snd_state["auto_match_bg"] else "secondary",
+                    hx_post="/api/sound/auto-bg",
+                    hx_target="#settings-controls",
+                    hx_swap=CTRL_SWAP,
+                    title="켜두면 배경 풍경이 바뀔 때마다 AI가 새 배경에 어울리는 mp3로 자동 전환합니다.",
+                ),
+                Button(
+                    "⏹️ 소리 끄기",
+                    type="button",
+                    cls="secondary",
+                    hx_post="/api/sound/stop",
+                    hx_target="#settings-controls",
+                    hx_swap=CTRL_SWAP,
+                ),
+                cls="sound-action-row",
+            ),
+            Form(
+                Div(
+                    Span(
+                        f"🔉 사운드 볼륨 ({snd_state['volume_pct']}%)",
+                        id="sound-vol-disp",
+                        cls="slider-label",
+                    ),
+                    Input(
+                        type="range",
+                        name="volume_pct",
+                        min="0",
+                        max="100",
+                        step="5",
+                        value=str(snd_state["volume_pct"]),
+                        oninput=(
+                            "document.getElementById('sound-vol-disp').textContent='🔉 사운드 볼륨 ('+this.value+'%)';"
+                            "if(window.__windoAmbientAudio){window.__windoAmbientAudio.volume=this.value/100.0;}"
+                        ),
+                        cls="custom-range-slider",
+                    ),
+                    cls="slider-row",
+                ),
+                hx_post="/api/sound/volume",
+                hx_trigger="change",
+                hx_target="#settings-controls",
+                hx_swap=CTRL_SWAP,
+                cls="custom-sliders-box",
+            ),
+            Div(
+                Span(
+                    f"🎵 mp3 폴더 사운드 목록 ({len(sound_tracks)}개 — 클릭하거나 \"~ 들려줘\"라고 말씀하세요)",
+                    cls="field-label",
+                    style="margin-bottom:6px; display:block;",
+                ),
+                Div(*sound_track_buttons, cls="preset-btn-grid"),
+            ),
+            id="sec-card-3",
+            cls="option-card selected",
+        ),
+        # =====================================================================
+        # 4. 실내 공기질 입력 (IAQ 임의값 입력 & AI 위험도 자동 판단)
+        # =====================================================================
+        Div(
+            Div(
+                Span("4. 실내 공기질 입력 · AI 위험도 판단"),
+                Span(iaq_state.grade_label, cls=f"hud-iaq-badge {iaq_state.badge_cls}"),
+                cls="option-card-title",
+            ),
+            Div(
+                Span("🤖 AI 판단", cls="iaq-status-head"),
+                Span(iaq_state.action_message, cls="iaq-status-msg"),
+                cls=f"iaq-status-box {'danger' if iaq_state.is_dangerous else ''}",
+            ),
+            Form(
+                Div(
+                    _iaq_field("초미세먼지 PM2.5", "㎍/㎥", "pm25", iaq_state.pm25, "0", "999"),
+                    _iaq_field("미세먼지 PM10", "㎍/㎥", "pm10", iaq_state.pm10, "0", "999"),
+                    _iaq_field("이산화탄소 CO₂", "ppm", "co2", iaq_state.co2_ppm, "300", "5000"),
+                    _iaq_field("유해가스 TVOC", "ppb", "tvoc", iaq_state.tvoc_ppb, "0", "5000"),
+                    cls="iaq-input-grid",
+                ),
+                Button("입력값 적용 & AI 판단", type="submit", cls="success", style="width:100%;"),
+                hx_post="/api/iaq/update",
+                hx_target="#settings-controls",
+                hx_swap=CTRL_SWAP,
+                cls="control-group",
+            ),
+            Div(
+                Span("빠른 테스트", cls="field-label"),
+                Div(
+                    _iaq_quick("🟢 쾌적", "pm25=11&pm10=24&co2=460&tvoc=95"),
+                    _iaq_quick("🟠 미세먼지 나쁨", "pm25=55&pm10=110&co2=650&tvoc=180"),
+                    _iaq_quick("🟡 CO₂ 높음", "pm25=14&pm10=28&co2=1350&tvoc=150"),
+                    _iaq_quick("🚨 매우 위험", "pm25=120&pm10=210&co2=1800&tvoc=650"),
+                    cls="quick-btn-grid",
+                ),
+                cls="control-group",
+                style="gap:6px;",
+            ),
+            P(
+                "기준: PM2.5 36↑ / PM10 81↑ / CO₂ 1001ppm↑ / TVOC 501ppb↑ 이면 위험으로 판단하고 공기청정기·환기를 작동시킵니다.",
+                cls="option-card-desc",
+            ),
+            id="sec-card-4",
+            cls="option-card",
+        ),
+        # =====================================================================
+        # 5. ComfyUI (풍경 생성 · 프롬프트/모델/LoRA 설정 · 하단 실시간 작동 모니터)
+        # =====================================================================
+        Div(
+            Div(
+                Span("5. ComfyUI (배경 생성 · 설정 · 실시간 작동 모니터)"),
+                Span(
+                    f"🔵 작동 중 {s_state.generation_progress_pct}%"
+                    if s_state.is_generating
+                    else ("✅ 완료 100%" if s_state.generation_progress_pct == 100 else "⚪ 대기 중"),
+                    cls="card-status-pill",
+                ),
+                cls="option-card-title",
+            ),
+            P(
+                "\"~ 만들어줘\"라고 말하거나 아래 생성창에 원하는 풍경을 입력해 ComfyUI를 실행하세요. "
+                "설정 칸 바로 아래에서 ComfyUI 7-노드 파이프라인이 실시간으로 작동하는 모습을 확인할 수 있습니다.",
                 cls="option-card-desc",
             ),
             Form(
-                # 모델 설정 & LoRA 파일 설정
+                Div(
+                    Input(
+                        type="text",
+                        name="gen_prompt",
+                        placeholder="생성할 창문 풍경 입력 (예: 눈 내리는 스위스 설산, 비 오는 도쿄 밤거리)",
+                        required=True,
+                    ),
+                    Button("🎨 ComfyUI 생성", type="submit", cls="success"),
+                    cls="inline-input-row",
+                ),
+                hx_post="/api/comfy/generate",
+                hx_swap="none",
+                hx_on__after_request="this.reset()",
+                cls="control-group",
+            ),
+            Form(
                 Div(
                     Div(
                         Span("📦 베이스 모델 (Checkpoint / Model)", cls="comfy-field-label"),
@@ -1978,7 +3297,6 @@ def render_settings_controls(oob: bool = False) -> FT:
                     ),
                     cls="comfy-grid-2col",
                 ),
-                # LoRA 강도 & 트리거 워드
                 Div(
                     Div(
                         Span(f"⚡ LoRA 강도 (현재: {cfg.lora_strength:.2f})", cls="comfy-field-label"),
@@ -2002,7 +3320,6 @@ def render_settings_controls(oob: bool = False) -> FT:
                     ),
                     cls="comfy-grid-2col",
                 ),
-                # 긍정 프롬프트 (Positive Prompt)
                 Div(
                     Span("➕ 긍정 프롬프트 (Positive Prompt — CLIPTextEncode +)", cls="comfy-field-label"),
                     Textarea(
@@ -2013,7 +3330,6 @@ def render_settings_controls(oob: bool = False) -> FT:
                         cls="comfy-prompt-textarea",
                     ),
                 ),
-                # 부정 프롬프트 (Negative Prompt)
                 Div(
                     Span("➖ 부정 프롬프트 (Negative Prompt — CLIPTextEncode -)", cls="comfy-field-label"),
                     Textarea(
@@ -2024,7 +3340,6 @@ def render_settings_controls(oob: bool = False) -> FT:
                         cls="comfy-prompt-textarea comfy-prompt-negative",
                     ),
                 ),
-                # KSampler 상세 설정 (Steps / CFG Scale / Sampler / Scheduler)
                 Div(
                     Div(
                         Span("Steps", cls="comfy-field-label"),
@@ -2044,18 +3359,24 @@ def render_settings_controls(oob: bool = False) -> FT:
                     ),
                     cls="comfy-grid-4col",
                 ),
-                Button("💾 ComfyUI 프롬프트 · 모델 · LoRA 설정 저장", type="submit", cls="success", style="width:100%;"),
+                Button("💾 ComfyUI 프롬프트 · 모델 · LoRA 설정 저장", type="submit", cls="secondary", style="width:100%;"),
                 hx_post="/api/comfy/config",
                 hx_target="#settings-controls",
-                hx_swap="outerHTML",
+                hx_swap=CTRL_SWAP,
                 cls="control-group",
             ),
+            # [핵심 요청 반영] 기존 상단 로그에 붙이지 않고 5번 ComfyUI 칸 바로 아래에서 실시간으로 작동하는 모습을 보여줌!
+            render_comfy_node_graph(s_state),
+            id="sec-card-5",
             cls="option-card selected",
         ),
-        # 카드 5: 구글 이미지 검색 & 웹 배경 찾기 ('찾아줘' 트리거 및 API 설정)
+
+        # =====================================================================
+        # 6. 구글 이미지 검색 ('~ 찾아줘' 웹 배경 선별 및 Searlo/Google API 설정)
+        # =====================================================================
         Div(
             Div(
-                Span("5. 구글 이미지 검색 & 웹 배경 찾기"),
+                Span("6. 구글 이미지 검색 & 웹 배경 찾기"),
                 Span(
                     "🟢 Searlo 공식 API 연동 중" if web_search_mgr.config.searlo_key
                     else ("구글 API 연동" if (web_search_mgr.config.api_key and web_search_mgr.config.cx) else "스마트 웹 폴백"),
@@ -2080,7 +3401,7 @@ def render_settings_controls(oob: bool = False) -> FT:
                 ),
                 hx_post="/api/web-search/execute",
                 hx_target="#settings-controls",
-                hx_swap="outerHTML",
+                hx_swap=CTRL_SWAP,
                 cls="control-group",
             ),
             Details(
@@ -2130,9 +3451,10 @@ def render_settings_controls(oob: bool = False) -> FT:
                     Button("💾 Searlo 및 검색 API 설정 저장", type="submit", cls="secondary", style="width:100%; margin-top:6px;"),
                     hx_post="/api/web-search/config",
                     hx_target="#settings-controls",
-                    hx_swap="outerHTML",
+                    hx_swap=CTRL_SWAP,
                     cls="control-group",
                 ),
+                id="details-web-search-api",
                 cls="comfy-json-details",
                 style="margin-top:2px;",
             ),
@@ -2141,51 +3463,118 @@ def render_settings_controls(oob: bool = False) -> FT:
                 cls="option-card-desc",
                 style="color: var(--ss-blue-dark); font-weight: 600;",
             ),
+            id="sec-card-6",
             cls="option-card",
         ),
-        # 카드 6: 이름 지정 배경 이미지 추가 (예: '최애' -> 최애.jpg & "윈도 최애" 음성 호출) 및 기존 배경 교체
-        Div(
-            Div(Span("6. 배경 이미지 추가 · 교체"), cls="option-card-title"),
-            P(
-                "이름(예: 최애)을 입력하고 이미지를 추가하면 '최애.jpg'로 저장되며, 저녁·노을처럼 \"윈도 최애\"라고 부르면 바로 틀어집니다! (이름을 비워두면 아래 선택된 기존 배경을 교체합니다)",
-                cls="option-card-desc",
-            ),
-            Form(
-                Input(
-                    type="text",
-                    name="custom_name",
-                    placeholder="새로 추가할 배경 이름 입력 (예: 최애, 우리집, 바다) — 입력 시 '윈도 최애' 음성 호출 등록!",
-                ),
-                Select(*preset_select_options, name="preset_key"),
-                Div(
-                    Input(
-                        type="file",
-                        name="image_file",
-                        accept=".svg,.jpg,.jpeg,.png,.webp,.gif,.bmp,.avif,image/svg+xml,image/jpeg,image/png,image/*",
-                        required=True,
-                    ),
-                    Button("이름 저장 & 즉시 적용", type="submit"),
-                    cls="inline-input-row",
-                ),
-                hx_post="/api/scene/upload",
-                hx_encoding="multipart/form-data",
-                hx_target="#settings-controls",
-                hx_swap="outerHTML",
-                cls="control-group",
-            ),
-            cls="option-card",
-        ),
-        # 카드 7: 마이크, 호출어('윈도', 'windo') 및 무응답 대기 시간 설정
+        # =====================================================================
+        # 7. 현재 창문 사진 기준 타임랩스 만들기 (기존 이미지 1장 + 다른 시간대 이미지 2장 = 총 3장 완성 후 순환)
+        # =====================================================================
         Div(
             Div(
-                Span("7. 마이크 & 호출어"),
+                Span("7. 현재 창문 사진 기준 타임랩스 만들기"),
+                Span(
+                    f"⏳ 생성 중 (Step {max(1, tl_cur_step)}/3 · {tl_gen_pct}%)"
+                    if tl_is_gen
+                    else (
+                        f"🟢 실행 중 ({tl_cur_stage_idx + 1}/3단계 · {tl_cur_speed:g}x)"
+                        if ingredients_mgr.is_active
+                        else f"⚪ 현재 창문: {s_state.active_title}"
+                    ),
+                    cls="card-status-pill",
+                ),
+                cls="option-card-title",
+            ),
+            P(
+                "\"타임랩스 만들어줘\"라고 말하거나 아래 [🎬 타임랩스 만들기] 버튼을 누르면, "
+                "현재 창문에 띄워져 있는 사진(1단계 원본 안바뀜)에 다른 시간대 이미지 2개(2단계·3단계)를 생성합니다. "
+                "이미지 3개가 모두 완성되면 설정한 배속 간격마다 다음 사진으로 자동 전환됩니다.",
+                cls="option-card-desc",
+            ),
+            Div(
+                Button(
+                    f"⏳ 타임랩스 이미지 3개 생성 중... ({tl_gen_pct}%)"
+                    if tl_is_gen
+                    else f"🎬 타임랩스 만들기 (현재 사진: {s_state.active_title})",
+                    type="button",
+                    cls="secondary" if tl_is_gen else "success",
+                    hx_post="/api/timelapse/from-current",
+                    hx_target="#settings-controls",
+                    hx_swap=CTRL_SWAP,
+                    title="현재 창문에 띄워져 있는 사진을 기준으로 다른 시간대 이미지 2개를 생성하여 3장이 모두 완성되면 타임랩스를 실행합니다.",
+                ),
+                Button(
+                    "⏹️ 타임랩스 끄기",
+                    type="button",
+                    cls="secondary",
+                    hx_post="/api/timelapse/stop",
+                    hx_target="#settings-controls",
+                    hx_swap=CTRL_SWAP,
+                ),
+                cls="timelapse-action-row",
+            ),
+            Div(
+                Span(
+                    f"⚡ 타임랩스 사진 전환 배속 설정 (현재: {tl_cur_speed:g}x 배속 · {tl_cur_interval:.0f}초마다 다음 사진)",
+                    cls="timelapse-subbox-title",
+                ),
+                Div(
+                    *tl_speed_buttons,
+                    cls="timelapse-speed-grid",
+                ),
+                cls="timelapse-speed-box",
+            ),
+            Div(
+                Div(
+                    Span(
+                        "🛠️ 타임랩스 이미지 3개 생성 과정 (3개 완성 시 자동 실행)"
+                        if tl_is_gen
+                        else (
+                            f"✅ 타임랩스 3단계 완성 ({tl_bundle_dict.get('phase_order_ko', '1단계 ➔ 2단계 ➔ 3단계')})"
+                            if tl_bundle_dict
+                            else "🛠️ 타임랩스 이미지 생성 대기 중 (3개 완성 후 실행)"
+                        ),
+                        cls="timelapse-progress-head-txt",
+                    ),
+                    Span(
+                        f"{tl_gen_pct}%",
+                        cls="timelapse-progress-pct-txt",
+                    ),
+                    cls="timelapse-progress-head-row",
+                ),
+                Div(
+                    Div(
+                        cls="gen-progress-fill",
+                        style=f"width: {tl_gen_pct}%;",
+                    ),
+                    cls="gen-progress-track",
+                    style="margin-bottom:6px;",
+                ),
+                Div(
+                    tl_gen_status,
+                    cls="timelapse-progress-status-txt",
+                ),
+                Div(
+                    *tl_step_cards,
+                    cls="timelapse-steps-stack",
+                ),
+                cls="timelapse-progress-box",
+            ),
+            id="sec-card-7",
+            cls="option-card selected",
+        ),
+        # =====================================================================
+        # 8. 마이크 & 호출어 ('윈도', 'windo' 및 무응답 대기 시간 설정)
+        # =====================================================================
+        Div(
+            Div(
+                Span("8. 마이크 & 호출어"),
                 Button(
                     "🔄 마이크 재탐색",
                     type="button",
                     cls="secondary",
                     hx_post="/api/mic/rescan",
                     hx_target="#settings-controls",
-                    hx_swap="outerHTML",
+                    hx_swap=CTRL_SWAP,
                 ),
                 cls="option-card-title",
             ),
@@ -2195,7 +3584,7 @@ def render_settings_controls(oob: bool = False) -> FT:
                     name="device_index",
                     hx_post="/api/mic/select",
                     hx_target="#settings-controls",
-                    hx_swap="outerHTML",
+                    hx_swap=CTRL_SWAP,
                 ),
                 cls="control-group",
             ),
@@ -2213,12 +3602,12 @@ def render_settings_controls(oob: bool = False) -> FT:
                 ),
                 hx_post="/api/wake-words",
                 hx_target="#settings-controls",
-                hx_swap="outerHTML",
+                hx_swap=CTRL_SWAP,
                 cls="control-group",
             ),
             Form(
                 Div(
-                    Span("⏱️ 호출 후 대기 시간(초):", cls="timeout-label"),
+                    Span("⏱️ 호출 후 대기(초):", cls="timeout-label"),
                     Input(
                         type="number",
                         name="timeout_sec",
@@ -2232,7 +3621,7 @@ def render_settings_controls(oob: bool = False) -> FT:
                 ),
                 hx_post="/api/wake-words/timeout",
                 hx_target="#settings-controls",
-                hx_swap="outerHTML",
+                hx_swap=CTRL_SWAP,
                 cls="control-group",
             ),
             Button(
@@ -2242,8 +3631,9 @@ def render_settings_controls(oob: bool = False) -> FT:
                 style="width:100%;",
                 hx_post="/api/wake-words/toggle",
                 hx_target="#settings-controls",
-                hx_swap="outerHTML",
+                hx_swap=CTRL_SWAP,
             ),
+            id="sec-card-8",
             cls="option-card",
         ),
         id="settings-controls",
@@ -2252,8 +3642,156 @@ def render_settings_controls(oob: bool = False) -> FT:
     )
 
 
+def render_settings_drawer_content(is_standalone: bool = False) -> FT:
+    """설정창 내부 컨텐츠 (창문이 왼쪽으로 밀려나면서 오른쪽에 생기는 슬림 설정창)"""
+    close_js = (
+        "window.close();"
+        if is_standalone
+        else (
+            "if(window.toggleWindoSettings){window.toggleWindoSettings(false);}else{"
+            "const bd=document.getElementById('settings-backdrop');"
+            "if(bd){bd.classList.remove('open');bd.style.setProperty('display','none','important');}"
+            "document.body.classList.remove('settings-docked-open');"
+            "const ws=document.getElementById('windo-main-workspace');if(ws)ws.classList.remove('settings-open');"
+            "const btn=document.getElementById('floating-settings-btn');if(btn)btn.classList.remove('active');"
+            "}"
+        )
+    )
+    return Div(
+        Header(
+            Div(
+                Span("WINDO", cls="drawer-logo"),
+                Span("AI 가상 창문 설정", cls="drawer-title"),
+                cls="drawer-brand",
+            ),
+            Div(
+                Button(
+                    "⚙️",
+                    id="drawer-gear-close-btn",
+                    type="button",
+                    title="설정 톱니바퀴 눌러 설정창 닫기",
+                    cls="drawer-gear-close-btn",
+                    onclick=close_js,
+                ),
+                Button(
+                    "✕ 닫기",
+                    type="button",
+                    cls="drawer-close-btn",
+                    onclick=close_js,
+                ),
+                cls="drawer-header-actions",
+            ),
+            cls="drawer-header",
+        ),
+        Div(
+            "✨ \"정보(켜·꺼)\" · \"~ 찾아줘\"(웹검색) · \"~ 만들어줘\"(AI생성) · \"~ 들려줘\"(사운드) · \"타임랩스 만들어줘\"",
+            cls="samsung-blue-banner",
+        ),
+        Div(
+            Button("🖥️ 로그", type="button", cls="quick-nav-chip log-chip", onclick="document.getElementById('sec-card-log')?.scrollIntoView({behavior:'smooth', block:'start'})"),
+            Button("1. 위젯", type="button", cls="quick-nav-chip", onclick="document.getElementById('sec-card-1')?.scrollIntoView({behavior:'smooth', block:'start'})"),
+            Button("2. 창문·채도", type="button", cls="quick-nav-chip", onclick="document.getElementById('sec-card-2')?.scrollIntoView({behavior:'smooth', block:'start'})"),
+            Button("3. 사운드", type="button", cls="quick-nav-chip", onclick="document.getElementById('sec-card-3')?.scrollIntoView({behavior:'smooth', block:'start'})"),
+            Button("4. 공기질", type="button", cls="quick-nav-chip", onclick="document.getElementById('sec-card-4')?.scrollIntoView({behavior:'smooth', block:'start'})"),
+            Button("5. ComfyUI", type="button", cls="quick-nav-chip", onclick="document.getElementById('sec-card-5')?.scrollIntoView({behavior:'smooth', block:'start'})"),
+            Button("6. 이미지검색", type="button", cls="quick-nav-chip", onclick="document.getElementById('sec-card-6')?.scrollIntoView({behavior:'smooth', block:'start'})"),
+            Button("7. 타임랩스", type="button", cls="quick-nav-chip", onclick="document.getElementById('sec-card-7')?.scrollIntoView({behavior:'smooth', block:'start'})"),
+            Button("8. 마이크", type="button", cls="quick-nav-chip", onclick="document.getElementById('sec-card-8')?.scrollIntoView({behavior:'smooth', block:'start'})"),
+            cls="drawer-quick-nav",
+        ),
+        Div(
+            # [맨 위쪽] 실시간 음성 & 시스템 로그 모니터 + 직접 명령어 입력 (ComfyUI 작동 모니터는 5번 칸 아래로 분리됨)
+            Div(
+                Div(
+                    Span("🖥️ 실시간 음성 & 시스템 로그 모니터"),
+                    Button(
+                        "로그 비우기",
+                        type="button",
+                        cls="secondary",
+                        hx_post="/api/logs/clear",
+                        hx_swap="none",
+                    ),
+                    cls="option-card-title",
+                ),
+                Form(
+                    Div(
+                        Input(
+                            type="text",
+                            name="sim_text",
+                            placeholder="직접 명령어 입력 (예: 윈도 타임랩스 만들어줘 / 윈도 비 소리 들려줘)",
+                        ),
+                        Button("실행", type="submit"),
+                        cls="inline-input-row",
+                    ),
+                    hx_post="/api/simulate",
+                    hx_swap="none",
+                    hx_on__after_request="this.reset()",
+                    cls="control-group",
+                ),
+                Div(
+                    Div(
+                        Span("LIVE VOICE & SYSTEM EXECUTION LOG (마우스 휠 스크롤)", cls="terminal-title"),
+                        cls="terminal-header",
+                    ),
+                    render_live_monitor(),
+                    cls="terminal-wrapper terminal-wrapper-top",
+                ),
+                id="sec-card-log",
+                cls="option-card top-log-card",
+            ),
+
+            # [1번 ~ 8번 순서대로 나열]
+            render_settings_controls(),
+            id="settings-drawer-scroll-body",
+            cls="drawer-body",
+        ),
+        cls=f"settings-drawer {'standalone-drawer' if is_standalone else ''}",
+        onclick="event.stopPropagation()",
+    )
+
+
+@rt("/settings")
+def get_standalone_settings():
+    """창문 화면 밖 별도 팝업 창으로 열리는 독립 설정창"""
+    return (
+        Title("WINDO | 설정 및 실시간 로그 모니터"),
+        Main(
+            render_settings_drawer_content(is_standalone=True),
+            cls="standalone-settings-page",
+        ),
+    )
+
+
+@rt("/api/system/reset")
+def post_system_reset():
+    """앱 재실행 또는 초기화 요청 시 기본 사진(default.png) 및 모든 기본 설정(코에룩스 OFF, 타임랩스 제거) 복원"""
+    reset_all_to_initial_defaults(clear_timelapse_files=True)
+    return Response(json.dumps({"ok": True, "active_key": "default"}), media_type="application/json")
+
+
 @rt("/")
 def get():
+    global _LAST_POLL_SETTINGS_SIG
+    # [핵심 요구사항] 창문 화면에 새로 들어가거나 다시 켤 때마다:
+    # 1) 기본 사진(default.png)부터 시작
+    # 2) 기존에 코에룩스를 켜고 껐더라도 안 켜진 상태(OFF)로 초기화
+    # 3) 타임랩스를 돌렸어도 완전히 없애고 초기 기본 설정 유지
+    reset_all_to_initial_defaults(clear_timelapse_files=True)
+    _LAST_POLL_SETTINGS_SIG = compute_settings_sig()
+
+    gear_toggle_js = (
+        "if(window.toggleWindoSettings){window.toggleWindoSettings();}else{"
+        "const bd=document.getElementById('settings-backdrop');"
+        "if(bd){"
+        "const openNow=!(bd.classList.contains('open')&&window.getComputedStyle(bd).display!=='none');"
+        "bd.classList.toggle('open',openNow);"
+        "bd.style.setProperty('display',openNow?'flex':'none','important');"
+        "document.body.classList.toggle('settings-docked-open',openNow);"
+        "const ws=document.getElementById('windo-main-workspace');if(ws)ws.classList.toggle('settings-open',openNow);"
+        "this.classList.toggle('active',openNow);"
+        "}"
+        "}"
+    )
     return (
         Title("WINDO | AI 가상 창문 (ComfyUI Edition)"),
         Main(
@@ -2269,82 +3807,20 @@ def get():
             ),
             Button(
                 "⚙️",
+                id="floating-settings-btn",
                 type="button",
-                title="WINDO 설정 및 ComfyUI 노드 모니터 열기",
+                title="설정창 열기 / 닫기 (한 번 더 누르면 닫힙니다)",
                 cls="floating-settings-trigger",
-                onclick="document.getElementById('settings-backdrop').classList.add('open')",
+                onclick=gear_toggle_js,
             ),
             Div(
-                Div(
-                    Header(
-                        Div(
-                            Span("WINDO", cls="drawer-logo"),
-                            Span("AI 가상 창문 설정 · ComfyUI 노드 실행 모니터", cls="drawer-title"),
-                            cls="drawer-brand",
-                        ),
-                        Button(
-                            "✕ 창문으로 돌아가기",
-                            type="button",
-                            cls="drawer-close-btn",
-                            onclick="document.getElementById('settings-backdrop').classList.remove('open')",
-                        ),
-                        cls="drawer-header",
-                    ),
-                    Div(
-                        "✨ \"정보 / 전체 (켜·꺼)\" → 모든 위젯 · \"~ 찾아줘\" → 웹 이미지 검색 · \"~ 만들어줘\" → AI 풍경 생성 · \"날씨/캘린더 꺼\" → 개별 끄기",
-                        cls="samsung-blue-banner",
-                    ),
-                    Div(
-                        render_settings_controls(),
-                        Div(
-                            Div(
-                                Div(
-                                    Span("8. 노드 실행 모니터 & 음성 로그"),
-                                    Button(
-                                        "로그 비우기",
-                                        type="button",
-                                        cls="secondary",
-                                        hx_post="/api/logs/clear",
-                                        hx_swap="none",
-                                    ),
-                                    cls="option-card-title",
-                                ),
-                                Form(
-                                    Div(
-                                        Input(
-                                            type="text",
-                                            name="sim_text",
-                                            placeholder="직접 명령어 입력 (예: 윈도 저녁 / 윈도 도쿄 야경 찾아줘 / 윈도 눈 내리는 숲 만들어줘)",
-                                        ),
-                                        Button("명령 실행", type="submit"),
-                                        cls="inline-input-row",
-                                    ),
-                                    hx_post="/api/simulate",
-                                    hx_swap="none",
-                                    hx_on__after_request="this.reset()",
-                                    cls="control-group",
-                                ),
-                                Div(
-                                    Div(
-                                        Span("COMFYUI NODE GRAPH & LOG", cls="terminal-title"),
-                                        cls="terminal-header",
-                                    ),
-                                    render_live_monitor(),
-                                    cls="terminal-wrapper terminal-wrapper-tall",
-                                ),
-                                cls="option-card",
-                            ),
-                            cls="drawer-col",
-                        ),
-                        cls="drawer-body",
-                    ),
-                    cls="settings-drawer",
-                    onclick="event.stopPropagation()",
-                ),
+                render_settings_drawer_content(is_standalone=False),
                 id="settings-backdrop",
                 cls="settings-backdrop",
-                onclick="this.classList.remove('open')",
+                style="display:none;",
             ),
+            id="windo-main-workspace",
+            cls="windo-split-workspace",
         ),
     )
 
@@ -2354,15 +3830,49 @@ def get():
 # -------------------------------------------------------------------------
 @rt("/api/window/poll")
 def get_window_poll(sig: str = ""):
+    global _LAST_POLL_SETTINGS_SIG
     current_sig = compute_window_sig()
     if sig == current_sig:
         return Response(status_code=204)
-    return render_window_stage(), render_settings_controls(oob=True)
+    curr_settings_sig = compute_settings_sig()
+    if curr_settings_sig != _LAST_POLL_SETTINGS_SIG:
+        _LAST_POLL_SETTINGS_SIG = curr_settings_sig
+        return render_window_stage(), render_settings_controls(oob=True)
+    return render_window_stage()
 
 
 @rt("/api/logs")
-def get_logs():
-    return render_live_monitor()
+def get_logs(sig: str = "", logsig: str = ""):
+    if sig and sig == compute_log_status_sig():
+        return Response(status_code=204)
+    s_state = landscape_mgr.get_state()
+    parts = [
+        render_live_status_poller(),
+        render_comfy_live_progress_panel(s_state, oob=True),
+        render_comfy_nodes_flow(s_state, oob=True),
+    ]
+    if logsig != compute_log_items_sig():
+        parts.append(render_log_items_inner(oob=True))
+    return tuple(parts)
+
+
+@rt("/api/comfy/generate")
+def post_comfy_generate(gen_prompt: str = ""):
+    q = gen_prompt.strip()
+    if not q:
+        return Response(status_code=204)
+    if not any(v in q for v in ("만들어줘", "만들어", "그려줘", "생성해줘")):
+        q_cmd = f"윈도 {q} 만들어줘"
+    else:
+        q_cmd = f"윈도 {q}"
+    audio_ctrl.simulate_voice_input(q_cmd)
+    s_state = landscape_mgr.get_state()
+    return (
+        render_comfy_live_progress_panel(s_state, oob=True),
+        render_comfy_nodes_flow(s_state, oob=True),
+        render_window_stage(oob=True),
+    )
+
 
 
 @rt("/api/comfy/config")
@@ -2442,6 +3952,83 @@ def post_calendar_toggle():
     return render_settings_controls(), render_window_stage(oob=True)
 
 
+@rt("/api/coelux/toggle")
+def post_coelux_toggle():
+    now_on = coelux_mgr.handle_command("TOGGLE_COELUX")
+    if now_on:
+        s_st = landscape_mgr.get_state()
+        coelux_mgr.analyze_background_file(
+            get_active_background_path(),
+            scene_hint=f"{s_st.active_title} {s_st.active_key}",
+        )
+        p_info = coelux_mgr.get_placement_state()
+        audio_ctrl.add_log(
+            "SYSTEM",
+            f"☀️ 가상 코에룩스(CoeLux) 실내 창문 채광 ON — {p_info['label_ko']} | 위치 (X:{p_info['x_pct']:.0f}%, Y:{p_info['y_pct']:.0f}%) | 색상 {p_info['active_color_hex']}",
+        )
+    else:
+        audio_ctrl.add_log("SYSTEM", "☀️ 가상 코에룩스(CoeLux) 실내 창문 채광 OFF")
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/coelux/update")
+def post_coelux_update(
+    intensity_pct: int = 100,
+    color_hex: str = "",
+    x_pct: float = 50.0,
+    y_pct: float = 20.0,
+):
+    coelux_mgr.set_enabled(True)
+    cur_hex = coelux_mgr.get_active_light_palettes()[3]
+    color_changed = bool(color_hex.strip()) and (color_hex.strip().lower() != cur_hex.lower())
+    pos_changed = (
+        abs(float(x_pct) - coelux_mgr.light_x_pct) >= 0.8
+        or abs(float(y_pct) - coelux_mgr.light_y_pct) >= 0.8
+    )
+    coelux_mgr.set_light_controls(
+        intensity_pct=intensity_pct,
+        color_hex=color_hex if color_changed else None,
+        x_pct=x_pct if pos_changed else None,
+        y_pct=y_pct if pos_changed else None,
+    )
+    p_info = coelux_mgr.get_placement_state()
+    audio_ctrl.add_log(
+        "SYSTEM",
+        f"☀️ 실내 창문 빛 조절: 밝기 {p_info['intensity_pct']}% · 색상 {p_info['active_color_hex']} · 위치 (X:{p_info['x_pct']:.0f}%, Y:{p_info['y_pct']:.0f}%)",
+    )
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/coelux/color")
+def post_coelux_color(hex_code: str = "#ffc86e"):
+    decoded_hex = urllib.parse.unquote(hex_code).strip()
+    coelux_mgr.set_enabled(True)
+    coelux_mgr.set_light_controls(color_hex=decoded_hex)
+    audio_ctrl.add_log("SYSTEM", f"🎨 실내 창문 빛 색상 변경: {decoded_hex}")
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/coelux/ai-reset")
+def post_coelux_ai_reset():
+    coelux_mgr.set_enabled(True)
+    coelux_mgr.set_light_controls(
+        intensity_pct=100,
+        use_ai_color=True,
+        use_ai_position=True,
+    )
+    s_st = landscape_mgr.get_state()
+    coelux_mgr.analyze_background_file(
+        get_active_background_path(),
+        scene_hint=f"{s_st.active_title} {s_st.active_key}",
+    )
+    p_info = coelux_mgr.get_placement_state()
+    audio_ctrl.add_log(
+        "SYSTEM",
+        f"🤖 AI 빛 위치·색상 자동 분석 복원: {p_info['label_ko']} | 위치 (X:{p_info['x_pct']:.0f}%, Y:{p_info['y_pct']:.0f}%) | 색상 {p_info['active_color_hex']}",
+    )
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
 @rt("/api/calendar/nav")
 def post_calendar_nav(delta: int = 0):
     calendar_mgr.change_month(delta)
@@ -2468,12 +4055,219 @@ def post_calendar_delete(event_id: str):
     return render_window_stage()
 
 
+@rt("/api/sound/play")
+def post_sound_play(filename: str = ""):
+    decoded_name = urllib.parse.unquote(filename).strip()
+    tr = sound_mgr.play_track(
+        decoded_name,
+        reason=f"설정창에서 '{decoded_name}' 사운드를 직접 선택하여 재생합니다.",
+        source_label="설정창 직접 선택",
+    )
+    if tr:
+        audio_ctrl.add_log(
+            "SYSTEM",
+            f"🔊 사운드 수동 재생: [{tr.icon} {tr.title}] ({tr.filename})",
+            f"볼륨 {sound_mgr.volume_pct}% · 무한 반복(Loop) 재생",
+        )
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/sound/stop")
+def post_sound_stop():
+    sound_mgr.stop(reason="설정창에서 소리 재생을 중지했습니다.")
+    audio_ctrl.add_log("SYSTEM", "🔇 사운드 재생 정지")
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/sound/toggle")
+def post_sound_toggle():
+    if sound_mgr.is_playing:
+        sound_mgr.stop(reason="위젯 토글로 소리를 껐습니다.")
+        audio_ctrl.add_log("SYSTEM", "🔇 배경 맞춤 사운드 OFF")
+    else:
+        s_st = landscape_mgr.get_state()
+        tr = sound_mgr.match_and_play_for_background(
+            get_active_background_path(),
+            scene_hint=f"{s_st.active_title} {s_st.active_key}",
+            on_gemini_updated=lambda g_tr, g_rsn: audio_ctrl.add_log(
+                "SYSTEM",
+                f"🤖 Gemini Vision 배경 맞춤 사운드 확정: [{g_tr.icon} {g_tr.title}] ({g_tr.filename})",
+                g_rsn,
+            ),
+        )
+        if tr:
+            st_info = sound_mgr.get_state()
+            audio_ctrl.add_log(
+                "SYSTEM",
+                f"🔊 배경 맞춤 사운드 ON: [{tr.icon} {tr.title}] ({tr.filename})",
+                st_info["reason"],
+            )
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/sound/match-bg")
+def post_sound_match_bg():
+    s_st = landscape_mgr.get_state()
+    tr = sound_mgr.match_and_play_for_background(
+        get_active_background_path(),
+        scene_hint=f"{s_st.active_title} {s_st.active_key}",
+        on_gemini_updated=lambda g_tr, g_rsn: audio_ctrl.add_log(
+            "SYSTEM",
+            f"🤖 Gemini Vision 배경 맞춤 사운드 확정: [{g_tr.icon} {g_tr.title}] ({g_tr.filename})",
+            g_rsn,
+        ),
+    )
+    if tr:
+        st_info = sound_mgr.get_state()
+        audio_ctrl.add_log(
+            "SYSTEM",
+            f"🤖 AI 배경 맞춤 사운드 분석 및 재생: [{tr.icon} {tr.title}] ({tr.filename})",
+            f"대상 배경: {s_st.active_title} | {st_info['reason']}",
+        )
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/sound/auto-bg")
+def post_sound_auto_bg():
+    now_auto = sound_mgr.toggle_auto_match_bg()
+    if now_auto:
+        s_st = landscape_mgr.get_state()
+        tr = sound_mgr.match_and_play_for_background(
+            get_active_background_path(),
+            scene_hint=f"{s_st.active_title} {s_st.active_key}",
+            on_gemini_updated=lambda g_tr, g_rsn: audio_ctrl.add_log(
+                "SYSTEM",
+                f"🤖 Gemini Vision 배경 맞춤 사운드 확정: [{g_tr.icon} {g_tr.title}] ({g_tr.filename})",
+                g_rsn,
+            ),
+        )
+        audio_ctrl.add_log(
+            "SYSTEM",
+            f"🔄 배경 변경 시 자동 맞춤 소리 ON" + (f" — 현재 배경 맞춤 재생: [{tr.icon} {tr.title}]" if tr else ""),
+            "이제 배경이 바뀔 때마다 Gemini AI가 새 배경에 어울리는 mp3를 자동으로 찾아 재생합니다.",
+        )
+    else:
+        audio_ctrl.add_log(
+            "SYSTEM",
+            "🔄 배경 변경 시 자동 맞춤 소리 OFF",
+            "배경이 바뀌어도 현재 사운드 상태를 그대로 유지합니다.",
+        )
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/sound/volume")
+def post_sound_volume(volume_pct: int = 75):
+    v = sound_mgr.set_volume(volume_pct)
+    audio_ctrl.add_log("SYSTEM", f"🔉 사운드 볼륨 조절: {v}%")
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/timelapse/toggle")
+def post_timelapse_toggle():
+    if ingredients_mgr.is_active or ingredients_mgr.is_generating:
+        ingredients_mgr.set_active(False)
+        audio_ctrl.add_log("SYSTEM", "🎬 타임랩스 OFF (일반 창문 모드로 복귀)")
+    else:
+        s_st = landscape_mgr.get_state()
+        bg_path = get_active_background_path()
+        started = ingredients_mgr.start_timelapse_generation_async(
+            image_path=bg_path,
+            title=s_st.active_title or "현재 창문 풍경",
+            active_preset_key=s_st.active_key,
+            try_gemini_api=True,
+            log_callback=audio_ctrl.add_log,
+        )
+        if started:
+            audio_ctrl.add_log(
+                "SYSTEM",
+                f"🎬 현재 창문 사진 [{s_st.active_title}] 기준 타임랩스 이미지 3개 생성 시작",
+                "Step 1/3(원본 시간대 분석) ➔ Step 2/3(다음 시간대 생성) ➔ Step 3/3(다다음 시간대 생성) 완료 후 자동 실행됩니다.",
+            )
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/timelapse/create")
+def post_timelapse_create():
+    s_st = landscape_mgr.get_state()
+    bg_path = get_active_background_path()
+    started = ingredients_mgr.start_timelapse_generation_async(
+        image_path=bg_path,
+        title=s_st.active_title or "현재 창문 풍경",
+        active_preset_key=s_st.active_key,
+        try_gemini_api=True,
+        log_callback=audio_ctrl.add_log,
+    )
+    if started:
+        audio_ctrl.add_log(
+            "SYSTEM",
+            f"🎬 [타임랩스 만들기] 현재 창문 사진 [{s_st.active_title}] 기준 타임랩스 이미지 3개 생성 시작",
+            "이미지 3개가 모두 완성되면 타임랩스가 자동으로 실행됩니다.",
+        )
+    return render_window_stage(), render_settings_controls(oob=True)
+
+
+@rt("/api/timelapse/stop")
+def post_timelapse_stop():
+    ingredients_mgr.set_active(False)
+    audio_ctrl.add_log("SYSTEM", "⏹️ 타임랩스 종료")
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/timelapse/from-current")
+def post_timelapse_from_current():
+    if ingredients_mgr.is_generating:
+        audio_ctrl.add_log(
+            "WARN",
+            f"⏳ 이미 타임랩스 이미지 3개를 생성 중입니다 ({ingredients_mgr.generation_progress_pct}%)",
+            "이미지 3개가 모두 완성되면 타임랩스가 자동으로 실행됩니다.",
+        )
+        return render_settings_controls(), render_window_stage(oob=True)
+    s_st = landscape_mgr.get_state()
+    bg_path = get_active_background_path()
+    started = ingredients_mgr.start_timelapse_generation_async(
+        image_path=bg_path,
+        title=s_st.active_title or "현재 창문 풍경",
+        active_preset_key=s_st.active_key,
+        try_gemini_api=True,
+        log_callback=audio_ctrl.add_log,
+    )
+    if started:
+        audio_ctrl.add_log(
+            "SYSTEM",
+            f"🎬 [타임랩스 만들기] 현재 창문 사진 [{s_st.active_title}] 기준 타임랩스 이미지 3개 생성 시작",
+            "Step 1/3 ➔ Step 2/3 ➔ Step 3/3 이미지 생성 완료 후 자동 실행됩니다.",
+        )
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/timelapse/speed")
+def post_timelapse_speed(speed: float = 1.0):
+    sp, interval = ingredients_mgr.set_speed_multiplier(speed)
+    audio_ctrl.add_log(
+        "SYSTEM",
+        f"⚡ 타임랩스 배속 설정 변경: {sp:g}x 배속 ({interval:.0f}초마다 다음 사진으로 전환)",
+    )
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
+@rt("/api/timelapse/stage")
+def post_timelapse_stage(idx: int = 0):
+    new_idx = ingredients_mgr.set_stage_index(idx)
+    audio_ctrl.add_log(
+        "SYSTEM",
+        f"🎬 타임랩스 {new_idx + 1}단계 사진으로 즉시 이동",
+    )
+    return render_settings_controls(), render_window_stage(oob=True)
+
+
 @rt("/api/scene/preset")
 def post_scene_preset(key: str):
     decoded_key = urllib.parse.unquote(key)
     preset = landscape_mgr.switch_to_preset(decoded_key)
     if preset:
+        ingredients_mgr.set_active(False)
         lighting_mgr.set_preset_override(preset.lighting_key)
+        trigger_auto_bg_sound_if_enabled()
         l_state = lighting_mgr.get_current_state()
         audio_ctrl.add_log(
             "SYSTEM",
@@ -2486,6 +4280,8 @@ def post_scene_preset(key: str):
 def post_scene_apply_cached():
     applied_url = landscape_mgr.apply_latest_cached_landscape(label="최근 생성된 AI 풍경")
     if applied_url:
+        ingredients_mgr.set_active(False)
+        trigger_auto_bg_sound_if_enabled()
         l_state = lighting_mgr.get_current_state()
         audio_ctrl.add_log(
             "STT",
@@ -2497,9 +4293,20 @@ def post_scene_apply_cached():
 
 @rt("/api/lighting/auto")
 def post_lighting_auto():
-    lighting_mgr.enable_auto_mode()
+    now_auto = lighting_mgr.toggle_auto_mode()
     l_state = lighting_mgr.get_current_state()
-    audio_ctrl.add_log("SYSTEM", f"☀️ 생체 리듬 자동 자연광 모드 활성화 ({l_state.cct_kelvin}K · 채도 {l_state.saturation_pct}%)")
+    if now_auto:
+        audio_ctrl.add_log(
+            "SYSTEM",
+            f"⏱️ 생체리듬 자동 광원 ON ({l_state.cct_kelvin}K · 채도 {l_state.saturation_pct}% 실시간 동기화)",
+            lighting_mgr.FEATURE_SUMMARY,
+        )
+    else:
+        audio_ctrl.add_log(
+            "SYSTEM",
+            "⏱️ 생체리듬 자동 광원 OFF (원본 풍경 무보정 100% 모드)",
+            "시간대별 색온도 자동 보정이 해제되었습니다. 버튼을 다시 누르면 켜집니다.",
+        )
     return render_settings_controls(), render_window_stage(oob=True)
 
 
@@ -2534,6 +4341,7 @@ async def post_scene_upload(preset_key: str = "default", image_file: UploadFile 
         preset = landscape_mgr.presets.get(applied_key)
         if preset:
             lighting_mgr.set_preset_override(preset.lighting_key)
+        trigger_auto_bg_sound_if_enabled()
         if custom_name.strip():
             ext = Path(image_file.filename or "custom.jpg").suffix.lower() or ".jpg"
             audio_ctrl.add_log(
@@ -2611,13 +4419,14 @@ def post_web_search_execute(search_query: str = ""):
                 pass
 
             with landscape_mgr._lock:
-                if stem not in landscape_mgr.presets:
-                    landscape_mgr.presets[stem] = landscape_mgr.build_custom_preset(stem, source_type="web")
-                landscape_mgr.switch_to_preset(stem)
+                landscape_mgr.record_preset_source(stem, "web")
+                landscape_mgr.presets[stem] = landscape_mgr.build_custom_preset(stem, source_type="web")
 
             AudioController.register_custom_scene_keyword(stem)
             sync_custom_scene_keywords()
+            landscape_mgr.switch_to_preset(stem)
             lighting_mgr.set_preset_override(inferred_light)
+            trigger_auto_bg_sound_if_enabled()
 
             l_state = lighting_mgr.get_current_state()
             audio_ctrl.add_log(
@@ -2644,10 +4453,39 @@ def post_simulate(sim_text: str):
 @rt("/api/logs/clear")
 def post_clear_logs():
     audio_ctrl.clear_logs()
-    return ""
+    return render_log_items_inner(oob=True)
+
+
+@rt("/ppt")
+def get_ppt_guide():
+    ppt_html_path = BASE_DIR / "PPT_발표자료_가이드.html"
+    if ppt_html_path.exists():
+        return HTMLResponse(ppt_html_path.read_text(encoding="utf-8"))
+    return HTMLResponse("<h1>PPT 가이드 파일을 찾을 수 없습니다.</h1>", status_code=404)
+
+
+
+# [핵심 404 방지] FastHTML의 fast_app()이 기본 등록하는 와일드카드 정적 라우트('/{fname:path}.{ext:static}')가
+# app.routes[0]에 있으면 '/cache/ingredients/{bundle_id}/morning.jpg' 요청을 가로채어
+# 점('.') 없는 'cache/ingredients/...' 경로를 찾다가 404 Not Found가 발생합니다.
+# 따라서 커스텀 라우트(@rt)가 항상 먼저 매칭되도록 기본 정적 라우트를 맨 뒤로 재배치합니다.
+for _r_idx, _r in enumerate(list(app.routes)):
+    if getattr(_r, "path", "") == "/{fname:path}.{ext:static}":
+        app.routes.append(app.routes.pop(_r_idx))
+        break
 
 
 if __name__ == "__main__":
     import uvicorn
+    import webbrowser
+
     audio_ctrl.start_listening()
+
+    if os.environ.get("WINDO_AUTO_BROWSER") == "1":
+        def _open_browser_once() -> None:
+            time.sleep(1.5)
+            webbrowser.open("http://127.0.0.1:5001")
+
+        threading.Thread(target=_open_browser_once, daemon=True).start()
+
     uvicorn.run(app, host="127.0.0.1", port=5001, reload=False)

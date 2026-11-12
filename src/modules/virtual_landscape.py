@@ -188,9 +188,12 @@ class IntentInferenceEngine:
 
     # 웹 이미지 검색 트리거 동사 ("찾아줘", "검색해줘" 등)
     SEARCH_VERBS: Tuple[str, ...] = (
-        "찾아줘", "찾아 줘", "찾아", "검색해줘", "검색해 줘", "검색해",
-        "찾아봐", "찾아봐줘", "구해줘",
+        "찾아줘", "찾아 줘", "찾아봐줘", "찾아봐", "찾아",
+        "검색해줘", "검색해 줘", "검색해", "검색",
+        "서치해줘", "서치해 줘", "서치해", "서치",
+        "구해줘", "구글에서", "웹에서", "인터넷에서",
     )
+
 
     FORCE_REGEN_WORDS: Tuple[str, ...] = (
         "새로", "다시", "새로운", "새롭게",
@@ -356,23 +359,32 @@ class IntentInferenceEngine:
         has_weather = any(k in text_lower for k in cls.WEATHER_MAP)
         has_location = any(k in text_lower for k in cls.LOCATION_MAP)
 
-        # Case A: 웹 이미지 검색 트리거 ("~ 찾아줘", "~ 검색해줘")
+        # Case A: 웹 이미지 검색 트리거 ("~ 찾아줘", "~ 검색해줘", "구글에서 ~ 보여줘")
         if has_search_verb and not has_gen_verb:
             # 검색 키워드 정제
             search_query = text
             for ww in ("윈도우", "윈도", "window", "windo"):
-                if search_query.startswith(ww):
+                if search_query.lower().startswith(ww):
                     search_query = search_query[len(ww):].strip()
-            for v in cls.SEARCH_VERBS:
+            for v in (
+                "찾아줘", "찾아 줘", "찾아봐줘", "찾아봐", "찾아",
+                "검색해줘", "검색해 줘", "검색해", "검색",
+                "서치해줘", "서치해 줘", "서치해", "서치", "구해줘",
+            ):
                 if v in search_query:
-                    search_query = search_query.split(v, 1)[0].strip()
+                    parts = search_query.split(v, 1)
+                    search_query = parts[0].strip() or (parts[1].strip() if len(parts) > 1 else "")
                     break
+            for f_word in ("보여줘", "보여 줘", "틀어줘", "틀어 줘", "띄워줘", "띄워 줘", "바꿔줘", "바꿔 줘", "적용해줘", "해줘"):
+                search_query = search_query.replace(f_word, " ")
             # 불필요 조사 제거
             search_query = re.sub(r"(이미지|사진|풍경|배경|웹에서|구글에서|인터넷에서|좀|하나|한번)\s*", " ", search_query)
             search_query = re.sub(r"(으로|로|을|를|이|가|에서)\s*$", "", search_query.strip()).strip()
-            if len(search_query) >= 2:
+            search_query = " ".join(search_query.split()).strip()
+            if len(search_query) >= 1:
                 location, weather, time_of_day, lighting_key = cls.extract_attributes(text)
                 return "search", search_query, (location, weather, time_of_day)
+
 
         # Case B: 사용자가 명시적으로 "~ 만들어줘", "~ 그려줘"라고 말한 경우 -> 이미지 생성('generate')!
         if has_gen_verb:
@@ -510,6 +522,7 @@ class VirtualLandscapeManager:
         self.base_dir = base_dir
         self.presets_dir = base_dir / "assets" / "images" / "presets"
         self.cache_dir = base_dir / ".cache" / "landscapes"
+        self.sources_file = base_dir / ".cache" / "preset_sources.json"
         self.loras_dir = base_dir / "loras"
         self.checkpoints_dir = base_dir / "models" / "checkpoints"
 
@@ -519,6 +532,7 @@ class VirtualLandscapeManager:
         self.checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
         self.presets: Dict[str, ScenePreset] = dict(DEFAULT_SCENE_PRESETS)
+        self._preset_sources: Dict[str, str] = self._load_preset_sources()
 
         # ComfyUI 사용자 설정 상태 (긍정 프롬프트, 부정 프롬프트, 모델, LoRA 등)
         self.comfy_config = ComfyUIConfig()
@@ -1038,18 +1052,58 @@ class VirtualLandscapeManager:
             source_type=source_type,
         )
 
+    def _load_preset_sources(self) -> Dict[str, str]:
+        if self.sources_file.exists():
+            try:
+                data = json.loads(self.sources_file.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    return {str(k): str(v) for k, v in data.items()}
+            except Exception:
+                pass
+        return {}
+
+    def record_preset_source(self, stem: str, source_type: str) -> None:
+        """프리셋의 출처('ai' | 'web' | 'custom')를 영구 저장하여 재스캔 시에도 정확히 유지"""
+        with self._lock:
+            self._preset_sources[stem] = source_type
+            try:
+                self.sources_file.parent.mkdir(parents=True, exist_ok=True)
+                self.sources_file.write_text(
+                    json.dumps(self._preset_sources, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
+
     def scan_and_register_preset_files(self) -> List[str]:
         registered_keys: List[str] = []
         web_images_dir = self.base_dir / ".cache" / "web_images"
 
         with self._lock:
-            # 1. ComfyUI 캐시에서 presets 폴더로 복사
+            # 0. 웹 검색 이미지 stem 목록 수집 (.cache/web_images/)
+            web_stems = set()
+            if web_images_dir.exists():
+                for w_file in web_images_dir.iterdir():
+                    if w_file.is_file() and w_file.suffix.lower() in self.SUPPORTED_EXTS:
+                        # "{stem}_{timestamp}.jpg" 형태에서 stem 추출
+                        m = re.match(r"^(.+)_\d{8,}$", w_file.stem)
+                        w_stem = m.group(1) if m else w_file.stem
+                        web_stems.add(w_stem)
+
+            # 1. ComfyUI 캐시에서 presets 폴더로 복사 (단, 웹 검색 이미지가 잘못 들어간 파일은 정리)
             if self.cache_dir.exists():
                 for c_file in sorted(self.cache_dir.iterdir()):
                     if not c_file.is_file() or c_file.suffix.lower() not in self.SUPPORTED_EXTS:
                         continue
                     stem = c_file.stem
                     if len(stem) == 20 and all(ch in "0123456789abcdef" for ch in stem.lower()):
+                        continue
+                    # 만약 웹에서 찾은 이미지(.jpg)가 과거에 cache/landscapes에 복사되어 있었다면 제거하여 AI와 혼동 방지
+                    if stem in web_stems and c_file.suffix.lower() in (".jpg", ".jpeg"):
+                        try:
+                            c_file.unlink()
+                        except Exception:
+                            pass
                         continue
                     target_in_presets = self.presets_dir / c_file.name
                     if not target_in_presets.exists() and c_file.stat().st_size > 0:
@@ -1058,7 +1112,7 @@ class VirtualLandscapeManager:
                         except Exception:
                             pass
 
-            # 2. presets 디렉터리 내 파일들을 스캔하여 출처별(AI/웹/직접넣음)로 등록
+            # 2. presets 디렉터리 내 파일들을 스캔하여 출처별(AI / 웹 / 기본 및 직접 추가)로 등록
             if self.presets_dir.exists():
                 for p_file in sorted(self.presets_dir.iterdir(), key=lambda f: f.stat().st_mtime):
                     if not p_file.is_file() or p_file.suffix.lower() not in self.SUPPORTED_EXTS:
@@ -1068,23 +1122,29 @@ class VirtualLandscapeManager:
                         continue
 
                     # 출처 정밀 판별
-                    # A) AI 생성: ComfyUI landscape_cache 폴더에 원본이 있거나 .png 파일이면서 cache_dir 매칭
-                    is_ai_file = (self.cache_dir / p_file.name).exists() or (
-                        self.cache_dir / f"{stem}.png"
-                    ).exists()
+                    # 1순위: 명시적 기록 확인 (단, 웹 검색 폴더에 있으면 'web' 보장)
+                    recorded = self._preset_sources.get(stem, "")
 
-                    # B) 웹 이미지 검색: .cache/web_images/ 에 stem과 매칭되는 파일이 있거나 web_images 기록에 있는 경우
-                    is_web_file = False
-                    if web_images_dir.exists():
+                    is_web_file = (stem in web_stems)
+                    if not is_web_file and web_images_dir.exists():
                         for w_file in web_images_dir.iterdir():
-                            if w_file.is_file() and w_file.stem.startswith(stem):
+                            if w_file.is_file() and (
+                                w_file.stem == stem or w_file.stem.startswith(f"{stem}_")
+                            ):
                                 is_web_file = True
                                 break
 
-                    if is_ai_file:
-                        src_type = "ai"
+                    is_ai_file = (
+                        not is_web_file
+                        and (self.cache_dir / f"{stem}.png").exists()
+                    )
+
+                    if recorded in ("web", "ai", "custom"):
+                        src_type = "web" if is_web_file else recorded
                     elif is_web_file:
                         src_type = "web"
+                    elif is_ai_file:
+                        src_type = "ai"
                     else:
                         # 사용자가 직접 넣은 파일 (괄호 없음)
                         src_type = "custom"
@@ -1143,6 +1203,12 @@ class VirtualLandscapeManager:
         preset = self.presets.get(preset_key, self.presets["default"])
         stem = preset.default_filename.lower()
 
+        if stem == "default":
+            default_png = self.presets_dir / "default.png"
+            if default_png.exists() and default_png.is_file():
+                mtime = int(default_png.stat().st_mtime)
+                return f"/assets/images/presets/default.png?v={mtime}"
+
         matched_files: List[Path] = []
         if self.presets_dir.exists():
             for p in self.presets_dir.iterdir():
@@ -1156,7 +1222,23 @@ class VirtualLandscapeManager:
             return f"/assets/images/presets/{encoded_name}?v={mtime}"
 
         encoded_stem = urllib.parse.quote(preset.default_filename)
-        return f"/assets/images/presets/{encoded_stem}.svg"
+        return f"/assets/images/presets/{encoded_stem}.png"
+
+    def reset_to_default(self) -> None:
+        """초기 기본 사진(default.png) 및 기본 대기 화면 상태로 완전히 복원합니다."""
+        with self._lock:
+            default_url = self.resolve_preset_image_url("default")
+            self.active_key = "default"
+            self.active_title = "기본 대기 화면"
+            self.current_image_url = default_url
+            self.previous_image_url = default_url
+            self.is_special_ai_image = False
+            if not self.is_generating:
+                self.generation_progress_pct = 0
+                self.generation_status_text = "ComfyUI 워크플로우 대기 중"
+                self.generation_error_text = ""
+                self._nodes = self._create_initial_nodes()
+            self._version += 1
 
     def save_uploaded_preset_image(
         self,
@@ -1179,6 +1261,7 @@ class VirtualLandscapeManager:
 
             with self._lock:
                 if stem not in DEFAULT_SCENE_PRESETS:
+                    self.record_preset_source(stem, "custom")
                     self.presets[stem] = self.build_custom_preset(stem, source_type="custom")
                 self.switch_to_preset(stem)
                 return stem, self.current_image_url
@@ -1760,6 +1843,7 @@ class VirtualLandscapeManager:
 
             total_sec = round(time.time() - gen_start_ts, 1)
             with self._lock:
+                self.record_preset_source(scene_stem, "ai")
                 custom_preset = self.build_custom_preset(scene_stem, source_type="ai")
                 if lighting_key and lighting_key != "default":
                     custom_preset.lighting_key = lighting_key
